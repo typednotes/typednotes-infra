@@ -1,2 +1,2 @@
-# typednotes-infra
-Typednotes infra declaration
+# Typednotes Infra Declaration
+
