@@ -47,13 +47,11 @@ fleet typednotes where
     { valueFrom := fromEnv "SECRETS_DB_PASSWORD" }
 
   -- Composed from a secret this fleet owns and an endpoint that does not exist
-  -- until `secrets-db` is created. Both become ordering edges.
+  -- until `secrets-db` is created. Both become ordering edges, so this is
+  -- created after them; the value is never known here.
   resource scaleway secrets "secrets-db-url" as dbUrl
     { valueFrom := composed
-        (.ap (.map (fun password (db : ObservedOf .postgres) =>
-                     s!"postgres://secretsadmin:{password}@{db.endpoint}/secrets")
-                   (.secretValue .scaleway dbPassword))
-             (.observed .scaleway .postgres secretsDb)) }
+        expr!"postgres://secretsadmin:{secretValueOf dbPassword}@{endpointOf secretsDb}/secrets" }
 
   resource scaleway postgres "secrets-db" as secretsDb
     { masterUsername       := "secretsadmin"
