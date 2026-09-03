@@ -92,10 +92,26 @@ lake exe typednotes-infra push --apply
 
 ## CI
 
-`.github/workflows/plan.yml` runs `check` on every push and pull request, and additionally posts
-a live `plan` to the run summary on pushes to `main`. It **never** applies: that stays a
-deliberate, human-triggered step. The live plan step needs `SCW_ACCESS_KEY`, `SCW_SECRET_KEY`,
-`SCW_DEFAULT_REGION` and `SCW_DEFAULT_PROJECT_ID` as repo secrets.
+Two workflows, split so that nothing which changes a cloud can be reached from a commit.
+
+**`plan.yml`** runs `check` on every push and pull request, and additionally posts a live `plan`
+to the run summary on pushes to `main`. It never applies.
+
+**`apply.yml`** is the manual apply. Its only trigger is `workflow_dispatch` — there is no push
+trigger to mis-condition — and it asks you to type `typednotes` to confirm. It runs the offline
+checks, prints the plan it is about to apply, applies via `lake script run apply --yes`, then
+prints the state afterwards (a clean apply leaves `nothing to do`). Concurrent runs queue rather
+than race.
+
+It declares an `environment: production`; **add required reviewers to that environment in
+Settings → Environments** if you want every apply to need a second pair of eyes. That is the one
+gate the workflow file cannot enforce for itself.
+
+Repo secrets needed: `SCW_ACCESS_KEY`, `SCW_SECRET_KEY`, `SCW_DEFAULT_REGION` and
+`SCW_DEFAULT_PROJECT_ID` for both workflows, plus `SECRETS_MASTER_KEY` and
+`SECRETS_DB_PASSWORD` for `apply.yml` — the values behind the two `fromEnv` secrets in
+`Fleet.lean`, needed only when those are first created. The composed database URL is never
+supplied here; the engine builds it at apply time.
 
 ## Notes
 

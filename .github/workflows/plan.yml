@@ -5,9 +5,9 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Never runs `push --apply` — that stays a manual, human-triggered step (local,
-# or `lake exe typednotes-infra push --apply` run by hand). This workflow only
-# ever shows what *would* change.
+# Never runs `push --apply`. This workflow only ever shows what *would*
+# change; applying lives in `apply.yml`, which has no push trigger at all and
+# must be dispatched by hand.
 jobs:
   build:
     runs-on: ubuntu-latest
