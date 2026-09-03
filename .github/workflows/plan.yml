@@ -18,8 +18,21 @@ jobs:
       # fleet touches. See `infra`'s `lean_action_ci.yml` for the fuller
       # explanation (`System.Keychain`/libsecret, libpq, OpenSSL headers).
       - name: Install native FFI dependencies
-        run: sudo apt-get update && sudo apt-get install -y libpq-dev libssl-dev libsecret-1-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install -y libpq-dev libssl-dev libsecret-1-dev pkg-config ca-certificates
       - uses: leanprover/lean-action@v1
+      # Lean's toolchain bundles a *static* OpenSSL whose compile-time
+      # `OPENSSLDIR` points at whatever machine built it, so on a fresh runner
+      # there is no trust store and every certificate fails to verify with
+      # "certificate verify failed". `SSL_CTX_set_default_verify_paths` — which
+      # is what Linen's TLS client calls — honours these two variables, so this
+      # points it at the runner's own bundle. See `infra`'s
+      # `docs/authentication.md`.
+      - name: Point OpenSSL at the runner's CA bundle
+        run: |
+          for f in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt; do
+            if [ -f "$f" ]; then echo "SSL_CERT_FILE=$f" >> "$GITHUB_ENV"; break; fi
+          done
+          echo "SSL_CERT_DIR=/etc/ssl/certs" >> "$GITHUB_ENV"
       # Offline, no credentials needed or available. Runs on every push and PR.
       - name: Run offline self-checks
         run: lake exe typednotes-infra check

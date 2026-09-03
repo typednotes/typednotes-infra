@@ -43,13 +43,60 @@ jobs:
       # `Infra` pulls in all of Linen's `extern_lib`, not just the parts this
       # fleet touches.
       - name: Install native FFI dependencies
-        run: sudo apt-get update && sudo apt-get install -y libpq-dev libssl-dev libsecret-1-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install -y libpq-dev libssl-dev libsecret-1-dev pkg-config ca-certificates
       - uses: leanprover/lean-action@v1
+      # Lean's toolchain bundles a *static* OpenSSL whose compile-time
+      # `OPENSSLDIR` points at whatever machine built it, so on a fresh runner
+      # there is no trust store and every certificate fails to verify with
+      # "certificate verify failed". `SSL_CTX_set_default_verify_paths` — which
+      # is what Linen's TLS client calls — honours these two variables, so this
+      # points it at the runner's own bundle. See `infra`'s
+      # `docs/authentication.md`.
+      - name: Point OpenSSL at the runner's CA bundle
+        run: |
+          for f in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt; do
+            if [ -f "$f" ]; then echo "SSL_CERT_FILE=$f" >> "$GITHUB_ENV"; break; fi
+          done
+          echo "SSL_CERT_DIR=/etc/ssl/certs" >> "$GITHUB_ENV"
 
       # Offline, credential-free, and first: if the declared fleet does not
       # even satisfy its own checks, nothing should reach a cloud.
       - name: Run offline self-checks
         run: lake exe typednotes-infra check
+
+      # Fail before touching anything if a required secret is missing.
+      #
+      # Not redundant with `infra`'s own credential error. The two `SECRETS_*`
+      # values are not credentials — they are the values behind `Fleet.lean`'s
+      # `fromEnv` secrets, read by the Scaleway backend at the moment each
+      # secret is *created*. A missing one therefore fails partway through,
+      # after the database already exists, leaving a half-applied fleet to
+      # clean up by hand. Checking here turns that into a five-second failure
+      # that names the variable.
+      #
+      # Only emptiness is tested; no value is printed. An undefined GitHub
+      # secret arrives as the empty string, which is exactly the case that
+      # previously slipped through as an unexplained TLS error.
+      - name: Check required secrets are present
+        env:
+          SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
+          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
+          SCW_DEFAULT_REGION: ${{ secrets.SCW_DEFAULT_REGION }}
+          SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
+          SECRETS_MASTER_KEY: ${{ secrets.SECRETS_MASTER_KEY }}
+          SECRETS_DB_PASSWORD: ${{ secrets.SECRETS_DB_PASSWORD }}
+        run: |
+          missing=()
+          for v in SCW_ACCESS_KEY SCW_SECRET_KEY SCW_DEFAULT_REGION \
+                   SCW_DEFAULT_PROJECT_ID SECRETS_MASTER_KEY SECRETS_DB_PASSWORD; do
+            [ -n "${!v}" ] || missing+=("$v")
+          done
+          if [ ${#missing[@]} -ne 0 ]; then
+            echo "Missing repo secrets: ${missing[*]}" >&2
+            echo "Add them under Settings -> Secrets and variables -> Actions." >&2
+            exit 1
+          fi
+          echo "All required secrets are present."
 
       # Scaleway only — `Infra.Cli` authenticates just the clouds the fleet
       # declares into, so no AWS secrets are needed or read.

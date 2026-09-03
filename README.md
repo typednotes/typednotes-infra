@@ -113,6 +113,16 @@ Repo secrets needed: `SCW_ACCESS_KEY`, `SCW_SECRET_KEY`, `SCW_DEFAULT_REGION` an
 `Fleet.lean`, needed only when those are first created. The composed database URL is never
 supplied here; the engine builds it at apply time.
 
+`apply.yml` checks all six are non-empty **before** it touches anything, and names the missing
+ones. That matters for the two `SECRETS_*` values in particular: they are not credentials, so
+nothing else would notice they were absent until the backend tried to create that secret —
+which is after the database already exists, leaving a half-applied fleet.
+
+Both workflows also point OpenSSL at the runner's CA bundle (`SSL_CERT_FILE`/`SSL_CERT_DIR`).
+Without it, any live call fails with `certificate verify failed`: Lean's toolchain bundles a
+static OpenSSL whose compile-time trust-store path does not exist on a runner. See `infra`'s
+`docs/authentication.md`.
+
 ## Notes
 
 `lakefile.lean` duplicates ~80 lines of platform-conditional link flags from `infra`'s own
