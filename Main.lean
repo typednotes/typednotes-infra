@@ -1,65 +1,31 @@
 import Fleet
 
 open Infra.Core
-open TypednotesInfra
 
-/-- Where the observed-state cache lives. Gitignored — see `infra`'s `docs/persistence.md`. -/
-def cacheRoot : System.FilePath := ".infra"
-
-/-- Nothing observed anywhere yet — `worldOf []` gives this for any fleet, regardless of what
-    `fleetKeys` declares, unlike a hand-rolled `sighting := fun _ _ key => nomatch key` (which
-    only typechecks while every key type is `Nothing`, i.e. while the fleet is empty). -/
-def emptyWorld : World fleetKeys := worldOf []
-
-/-- Checks `push`'s dry run against the placeholder backends, without touching a cloud. Every
-    declared resource is a create, since nothing has been observed. -/
-def checkPush : IO Unit := do
-  let dry ← push Infra.Providers.all fleetPlan emptyWorld {}
+/-- Checks the declared fleet against the placeholder backends, offline: every
+    resource is a create, since nothing has been observed, and they must be
+    ordered so the composed database URL comes after both the password it
+    reads and the database whose endpoint it needs. Needs no credentials and
+    touches no network. -/
+def checkFleet : IO Unit := do
+  let dry ← push Infra.Providers.all typednotes.plan (worldOf []) {}
   let creates := dry.filter (·.startsWith "would CREATE")
   unless creates.length == 5 do
-    throw (IO.userError s!"expected 5 creates, got {creates.length}: {dry}")
-  IO.println "push: ok (dry run against the placeholder backends)"
+    throw (IO.userError s!"expected 5 creates in one apply, got {creates.length}: {dry}")
 
-/-- Self-checks, run when no subcommand is given. Everything here works offline; nothing touches
-    a cloud, and none of it needs credentials. -/
-def selfCheck : IO Unit := do
-  IO.println "typednotes-infra: fleet loaded"
-  checkPush
+  let idx (needle : String) : Option Nat :=
+    dry.findIdx? fun l => (l.splitOn needle).length > 1
+  match idx "secrets/secrets-db-password", idx "postgres/secrets-db",
+        idx "secrets/secrets-db-url", idx "scaleway-container/secrets-server" with
+  | some password, some db, some url, some server =>
+    unless password < url && db < url do
+      throw (IO.userError s!"the composed database URL must come last: {dry}")
+    unless url < server do
+      throw (IO.userError s!"the container must come after the secrets it binds: {dry}")
+  | _, _, _, _ => throw (IO.userError s!"expected all five slots in the plan: {dry}")
 
-def usage : String := String.intercalate "\n"
-  [ "usage: typednotes-infra [check | plan | pull | push [--apply]]"
-  , ""
-  , "  check           run the offline self-checks (default)"
-  , "  pull            observe both clouds and cache what is there"
-  , "  plan            show what would change, without changing anything"
-  , "  push            same as plan — a dry run"
-  , "  push --apply    actually reconcile"
-  ]
+  IO.println s!"fleet: ok ({creates.length} resources, one apply, correctly ordered)"
 
-/-- Live commands need credentials for both clouds; the failure names every place that was
-    searched — see `infra`'s `docs/authentication.md`. -/
-def withLive (act : Infra.Core.Backends → IO Unit) : IO Unit := do
-  act (← Infra.Providers.liveFromEnvironment)
-
-def main (args : List String) : IO UInt32 := do
-  match args with
-  | [] | ["check"] => selfCheck; return 0
-  | ["pull"] =>
-    withLive fun bs => do
-      let world ← pull (κ := fleetKeys) cacheRoot bs
-      let outstanding := plan fleetPlan world
-      IO.println s!"pulled; {outstanding.length} action(s) outstanding"
-    return 0
-  | ["plan"] | ["push"] =>
-    withLive fun bs => do
-      let world ← pull (κ := fleetKeys) cacheRoot bs
-      for line in ← push bs fleetPlan world {} do IO.println line
-    return 0
-  | ["push", "--apply"] =>
-    withLive fun bs => do
-      let world ← pull (κ := fleetKeys) cacheRoot bs
-      for line in ← push bs fleetPlan world { apply := true } do IO.println line
-    return 0
-  | _ =>
-    IO.eprintln usage
-    return 2
+/-- The dispatch lives in `infra`; this repo declares. -/
+def main (args : List String) : IO UInt32 :=
+  Infra.Cli.run "typednotes-infra" typednotes.plan checkFleet (args := args)
