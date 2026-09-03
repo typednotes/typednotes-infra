@@ -99,6 +99,9 @@ lean_exe «typednotes-infra» where
   behavior change than "one more `lake exe` subcommand" for a benefit that is mostly typing four
   fewer characters. `lake exe typednotes-infra <cmd>` is unambiguous about when a cloud is
   touched; these `lake script`s exist only to save typing the executable's name.
+
+  `apply` is the exception to "only to save typing": it adds a refusal. See its
+  own comment below.
 -/
 
 /-- `lake script run check` — same as `lake exe typednotes-infra check`. -/
@@ -114,3 +117,29 @@ script plan (_args) do
   IO.print out.stdout
   IO.eprint out.stderr
   return out.exitCode
+
+/-- `lake script run apply --yes` — the only command here that changes a
+    cloud.
+
+    Unlike `check` and `plan`, this does not merely save typing: it **refuses
+    without `--yes`**. A one-word `apply` sitting next to a one-word `plan` is
+    too easy to reach for by accident, and the two differ by whether real,
+    billable resources are created or destroyed — so the intent has to be
+    stated separately from the command name. CI supplies the flag from a
+    manually dispatched workflow and never from a push; see
+    `.github/workflows/apply.yml`.
+
+    Output is streamed rather than captured, because an apply can take minutes
+    and a CI log that stays empty until the end is unreadable — and if it
+    fails partway, what already happened is the important part. -/
+script apply args do
+  unless args.contains "--yes" do
+    IO.eprintln "refusing to apply without --yes."
+    IO.eprintln ""
+    IO.eprintln "  This creates, modifies or deletes real, billable Scaleway resources."
+    IO.eprintln "  Review the plan first:  lake script run plan"
+    IO.eprintln "  Then, deliberately:     lake script run apply --yes"
+    return 1
+  let child ← IO.Process.spawn
+    { cmd := "lake", args := #["exe", "typednotes-infra", "push", "--apply"] }
+  return (← child.wait)

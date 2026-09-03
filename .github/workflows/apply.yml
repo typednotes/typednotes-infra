@@ -1,0 +1,105 @@
+name: Apply
+
+# `workflow_dispatch` is the ONLY trigger, deliberately. Keeping apply in its
+# own file — rather than as a job in `plan.yml`, which runs on every push —
+# means there is no `if:` condition standing between a push and a live
+# reconcile: the trigger simply does not exist. A mis-edited condition cannot
+# turn a commit into a deployment.
+#
+# Three further gates, in order:
+#   1. `confirm` must be typed exactly. A dropdown or a bare "Run workflow"
+#      button is one click; typing the fleet's name is a decision.
+#   2. `environment:` lets the repo owner require a reviewer in Settings →
+#      Environments. That is the only gate this file cannot enforce by itself,
+#      and the one worth adding.
+#   3. The plan is printed and kept in the log immediately before the apply,
+#      so what was applied is recoverable afterwards.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "typednotes" to confirm a live apply'
+        required: true
+        type: string
+
+# Two applies at once would race on the same resources; the second waits
+# rather than being cancelled, because cancelling mid-apply is worse than
+# queueing.
+concurrency:
+  group: apply-typednotes
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    if: inputs.confirm == 'typednotes'
+    # Add required reviewers to this environment in the repo settings to make
+    # every apply need a second pair of eyes. Scaleway secrets can also be
+    # scoped to it, so a plan run cannot reach apply-only credentials.
+    environment: production
+    steps:
+      - uses: actions/checkout@v5
+      # Same native FFI dependency set as `plan.yml`, for the same reason:
+      # `Infra` pulls in all of Linen's `extern_lib`, not just the parts this
+      # fleet touches.
+      - name: Install native FFI dependencies
+        run: sudo apt-get update && sudo apt-get install -y libpq-dev libssl-dev libsecret-1-dev pkg-config
+      - uses: leanprover/lean-action@v1
+
+      # Offline, credential-free, and first: if the declared fleet does not
+      # even satisfy its own checks, nothing should reach a cloud.
+      - name: Run offline self-checks
+        run: lake exe typednotes-infra check
+
+      # Scaleway only — `Infra.Cli` authenticates just the clouds the fleet
+      # declares into, so no AWS secrets are needed or read.
+      #
+      # `SECRETS_MASTER_KEY` and `SECRETS_DB_PASSWORD` are the values the two
+      # `fromEnv` secrets in `Fleet.lean` read. They are *only* needed when
+      # those secrets are first created; the composed database URL is built by
+      # the engine at apply time and is never supplied here.
+      - name: Plan
+        env:
+          SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
+          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
+          SCW_DEFAULT_REGION: ${{ secrets.SCW_DEFAULT_REGION }}
+          SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
+        run: |
+          {
+            echo '### Plan being applied'
+            echo '```'
+            lake exe typednotes-infra plan
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # The mutating step. Goes through the `apply` script rather than
+      # `lake exe ... push --apply` so the `--yes` refusal is exercised by the
+      # same path a human uses locally — one command with one meaning, not two
+      # spellings that can drift apart.
+      - name: Apply
+        env:
+          SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
+          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
+          SCW_DEFAULT_REGION: ${{ secrets.SCW_DEFAULT_REGION }}
+          SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
+          SECRETS_MASTER_KEY: ${{ secrets.SECRETS_MASTER_KEY }}
+          SECRETS_DB_PASSWORD: ${{ secrets.SECRETS_DB_PASSWORD }}
+        run: lake script run apply --yes
+
+      # What the account looks like afterwards. A clean apply leaves nothing
+      # outstanding, so this should print "nothing to do" — and if it does not,
+      # the log says what is still unreconciled instead of leaving it to be
+      # discovered on the next run.
+      - name: Verify convergence
+        env:
+          SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
+          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
+          SCW_DEFAULT_REGION: ${{ secrets.SCW_DEFAULT_REGION }}
+          SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
+        run: |
+          {
+            echo '### State after apply'
+            echo '```'
+            lake exe typednotes-infra plan
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
