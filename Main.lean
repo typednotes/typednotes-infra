@@ -40,9 +40,10 @@ def checkFleet : IO Unit := do
     Scaleway organization id is visible in the console URL. They are recorded
     here, in the repo that declares the fleet, rather than in `infra`, which
     has no business knowing whose accounts it is pointed at. -/
-def accounts : Infra.Cli.Accounts :=
-  { aws      := some "616568506952"
-    scaleway := some "4d7c630f-df06-43fe-b9e5-df729c8be4e3" }
+def accounts : Infra.Cli.Accounts where
+  expect
+    | .aws      => some "616568506952"
+    | .scaleway => some "4d7c630f-df06-43fe-b9e5-df729c8be4e3"
 
 /-- The dispatch lives in `infra`; this repo declares. -/
 def main (args : List String) : IO UInt32 :=

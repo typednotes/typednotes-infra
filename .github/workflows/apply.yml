@@ -120,7 +120,7 @@ jobs:
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
       # The mutating step. Goes through the `apply` script rather than
-      # `lake exe ... push --apply` so the `--yes` refusal is exercised by the
+      # `lake exe ... apply` so the `--yes` refusal is exercised by the
       # same path a human uses locally — one command with one meaning, not two
       # spellings that can drift apart.
       - name: Apply

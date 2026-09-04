@@ -4,11 +4,11 @@ Real infrastructure, declared as Lean 4 values using
 [`infra`](https://github.com/typednotes/infra) — a Terraform/OpenTofu-style tool where target
 and observed cloud state are Lean values rather than a bespoke DSL, and dependent types make
 impossible states unrepresentable. This repo is the *consumer*: it declares one project's actual
-fleet. `infra` is the reusable engine, the provider backends, and the `plan`/`push` machinery.
+fleet. `infra` is the reusable engine, the provider backends, and the `plan`/`apply` machinery.
 
 **This performs real, billable cloud actions and can create, modify, or delete real resources.**
-`check` never touches a network. `plan`/`push` (without `--apply`) pull live state and print what
-would change, but change nothing. `push --apply` is the only command that mutates anything — and
+`check` never touches a network. `plan` pulls live state and prints what
+would change, but change nothing. `apply` is the only command that mutates anything — and
 only the resources named in `Fleet.lean`: a `(provider, kind)` pair not listed there, or a name
 not listed under a pair that is, has no key for the plan to mention and is left alone
 unconditionally.
@@ -31,7 +31,7 @@ Scaleway only, so AWS is never authenticated and never called — both facts are
 ### One apply, not two
 
 `secrets-db-url`'s value needs the master password *and* the endpoint Scaleway assigns when the
-database is created. That used to mean two `push --apply` runs with an operator pasting a
+database is created. That used to mean two `apply` runs with an operator pasting a
 connection string in between. `Fleet.lean` now declares the *function* instead, with `composed`
 over `.secretValue` and `.observed`; `infra` orders the password and the database before it and
 evaluates it once, at apply time. The value never enters this repo, the plan output, or the
@@ -56,13 +56,12 @@ reconciliation.
 ```
 lake build                       # compile only; no network, no credentials
 lake exe typednotes-infra check  # offline checks (also: bare `lake exe typednotes-infra`)
-lake exe typednotes-infra pull   # observe Scaleway and cache to .infra/ — needs credentials
+lake exe typednotes-infra refresh  # observe Scaleway and cache to .infra/ — needs credentials
 lake exe typednotes-infra plan   # what would change — needs credentials, changes nothing
-lake exe typednotes-infra push   # same as plan — a dry run
-lake exe typednotes-infra push --apply   # actually reconcile — the only mutating command
+lake exe typednotes-infra apply  # actually reconcile — the only mutating command
 ```
 
-`lake build` only compiles. `plan` and `push` are `infra`'s, called from here and from CI.
+`lake build` only compiles. `plan` and `apply` are `infra`'s, called from here and from CI.
 
 Credentials come from `infra`'s three-source chain — the Scaleway CLI's own config file, the OS
 keychain, then environment variables (see `infra`'s `docs/authentication.md`). Scaleway also
@@ -87,7 +86,7 @@ Then review the plan and apply:
 ```
 export SECRETS_MASTER_KEY=...  SECRETS_DB_PASSWORD=...
 lake exe typednotes-infra plan          # read this
-lake exe typednotes-infra push --apply
+lake exe typednotes-infra apply
 ```
 
 ## CI
