@@ -5,7 +5,7 @@
    "type": "git",
    "subDir": null,
    "scope": "",
-   "rev": "125c872e175449e8b07aaf3cda961a006754a63a",
+   "rev": "f47e58dfed8975c91c4212495893cf019ada1c1f",
    "name": "infra",
    "manifestFile": "lake-manifest.json",
    "inputRev": "main",
