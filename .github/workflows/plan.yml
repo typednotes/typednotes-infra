@@ -5,7 +5,7 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Never runs `push --apply`. This workflow only ever shows what *would*
+# Never runs `apply`. This workflow only ever shows what *would*
 # change; applying lives in `apply.yml`, which has no push trigger at all and
 # must be dispatched by hand.
 jobs:

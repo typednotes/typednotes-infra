@@ -141,5 +141,5 @@ script apply args do
     IO.eprintln "  Then, deliberately:     lake script run apply --yes"
     return 1
   let child ← IO.Process.spawn
-    { cmd := "lake", args := #["exe", "typednotes-infra", "push", "--apply"] }
+    { cmd := "lake", args := #["exe", "typednotes-infra", "apply"] }
   return (← child.wait)
