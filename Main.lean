@@ -10,8 +10,9 @@ open Infra.Core
 def checkFleet : IO Unit := do
   let dry ← push Infra.Providers.all typednotes.plan (worldOf []) {}
   let creates := dry.filter (·.startsWith "would CREATE")
-  unless creates.length == 5 do
-    throw (IO.userError s!"expected 5 creates in one apply, got {creates.length}: {dry}")
+  -- Six: the namespace the container is placed into is now declared too.
+  unless creates.length == 6 do
+    throw (IO.userError s!"expected 6 creates in one apply, got {creates.length}: {dry}")
 
   let idx (needle : String) : Option Nat :=
     dry.findIdx? fun l => (l.splitOn needle).length > 1
@@ -23,6 +24,14 @@ def checkFleet : IO Unit := do
     unless url < server do
       throw (IO.userError s!"the container must come after the secrets it binds: {dry}")
   | _, _, _, _ => throw (IO.userError s!"expected all five slots in the plan: {dry}")
+
+  -- The namespace must precede the container placed into it.
+  match idx "scaleway-container-namespace/typednotes",
+        idx "scaleway-container/secrets-server" with
+  | some ns, some server =>
+    unless ns < server do
+      throw (IO.userError s!"the namespace must come before its container: {dry}")
+  | _, _ => throw (IO.userError s!"expected the namespace and the container: {dry}")
 
   IO.println s!"fleet: ok ({creates.length} resources, one apply, correctly ordered)"
 

@@ -15,7 +15,7 @@ unconditionally.
 
 ## What's declared
 
-`Fleet.lean` is the whole declaration. It manages five Scaleway resources:
+`Fleet.lean` is the whole declaration. It manages six Scaleway resources:
 
 | | |
 |---|---|
@@ -24,6 +24,7 @@ unconditionally.
 | `secrets-master-key` | the container's own master key |
 | `secrets-db-password` | the database's master password |
 | `secrets-db-url` | the connection string, composed at apply time |
+| `typednotes` | the Serverless Containers namespace the container is placed into |
 
 Scaleway only, so AWS is never authenticated and never called — both facts are
 `#guard`ed in `Fleet.lean` rather than assumed.
@@ -43,9 +44,15 @@ So the whole fleet deploys in a single apply:
 would CREATE scaleway/secrets/secrets-master-key
 would CREATE scaleway/secrets/secrets-db-password
 would CREATE scaleway/postgres/secrets-db
+would CREATE scaleway/scaleway-container-namespace/typednotes
 would CREATE scaleway/secrets/secrets-db-url
 would CREATE scaleway/scaleway-container/secrets-server
 ```
+
+The namespace is declared rather than assumed. Serverless Containers will not
+place a container into a namespace that does not exist, and `namespace'` is a
+*reference*, so it is created first and cannot be misspelled — that used to
+fail at apply time with `no namespace named 'typednotes'`.
 
 A composed secret is **create-only**: no cloud reports a secret's value, so it can never be
 diffed, and a second apply asks for nothing. Rotating one is an explicit act, not a
