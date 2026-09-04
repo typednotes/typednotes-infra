@@ -59,8 +59,16 @@ fleet typednotes where
     , minCapacity          := 1
     , maxCapacity          := 4 }
 
+  -- The namespace the container is placed into. Declared here rather than
+  -- assumed: Serverless Containers will not place a container into a namespace
+  -- that does not exist, and `namespace'` is a reference, so this is created
+  -- first and cannot be misspelled. Creating it also creates the Container
+  -- Registry namespace the image below is pushed to.
+  resource scaleway scalewayContainerNamespace "typednotes" as ns
+    { description := "typednotes services" }
+
   resource scaleway scalewayContainer "secrets-server"
-    { namespace' := "typednotes"
+    { namespace' := ns
     , image      := "rg.fr-par.scw.cloud/typednotes/secrets-server:latest"
     , port       := 8200
     , secretEnv  := [ ("SECRETS_MASTER_KEY", masterKey)
