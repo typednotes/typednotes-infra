@@ -27,6 +27,16 @@ import Infra
   apply time, without the value ever entering this file, the plan output, or
   the `.infra/` cache. **One `push --apply` deploys the whole fleet.**
 
+  ## Where it is
+
+  `in paris` places the fleet at `fr-par`, Scaleway's Paris region. It used to
+  come from `SCW_DEFAULT_REGION`, supplied to CI as a repo secret — invisible
+  in the repo, unpinned, and free to disagree with the `rg.fr-par.scw.cloud`
+  baked into the image URL below without anything noticing. The account guard
+  in `Main.lean` checks the organization, not the region, so nothing did.
+  Declaring it here removes the secret and the disagreement: `infra` builds
+  every Scaleway endpoint from this rather than from the environment.
+
   **The image is mirrored into Scaleway Container Registry rather than pulled
   from GHCR.** Scaleway's docs say public external registries work but
   discourage them for production ("uncontrolled rate limiting"), and do not
@@ -39,7 +49,7 @@ import Infra
 open Infra.Core
 open Infra.Specs
 
-fleet typednotes where
+fleet typednotes in paris where
   resource scaleway secrets "secrets-master-key" as masterKey
     { valueFrom := fromEnv "SECRETS_MASTER_KEY" }
 
@@ -80,3 +90,9 @@ fleet typednotes where
 
 -- Scaleway only: AWS credentials are neither needed nor read.
 #guard typednotes.keys.providers = [.scaleway]
+
+-- Paris means `fr-par` here, which is the region in the image URL above. The
+-- two are separate mechanisms — one is a placement, the other is a hostname in
+-- a string — so this guard is what notices if either moves without the other.
+#guard (typednotes.regions.region .scaleway).map Region.code = some "fr-par"
+#guard typednotes.regions.covers typednotes.keys

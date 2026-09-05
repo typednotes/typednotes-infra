@@ -56,4 +56,5 @@ def accounts : Infra.Cli.Accounts where
 
 /-- The dispatch lives in `infra`; this repo declares. -/
 def main (args : List String) : IO UInt32 :=
-  Infra.Cli.run "typednotes-infra" typednotes.plan checkFleet accounts (args := args)
+  Infra.Cli.run "typednotes-infra" typednotes.plan checkFleet accounts
+    (regions := typednotes.regions) (args := args)

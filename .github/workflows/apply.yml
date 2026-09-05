@@ -81,13 +81,12 @@ jobs:
         env:
           SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
           SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
-          SCW_DEFAULT_REGION: ${{ secrets.SCW_DEFAULT_REGION }}
           SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
           SECRETS_MASTER_KEY: ${{ secrets.SECRETS_MASTER_KEY }}
           SECRETS_DB_PASSWORD: ${{ secrets.SECRETS_DB_PASSWORD }}
         run: |
           missing=()
-          for v in SCW_ACCESS_KEY SCW_SECRET_KEY SCW_DEFAULT_REGION \
+          for v in SCW_ACCESS_KEY SCW_SECRET_KEY \
                    SCW_DEFAULT_PROJECT_ID SECRETS_MASTER_KEY SECRETS_DB_PASSWORD; do
             [ -n "${!v}" ] || missing+=("$v")
           done
@@ -109,7 +108,6 @@ jobs:
         env:
           SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
           SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
-          SCW_DEFAULT_REGION: ${{ secrets.SCW_DEFAULT_REGION }}
           SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
         run: |
           {
@@ -127,7 +125,6 @@ jobs:
         env:
           SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
           SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
-          SCW_DEFAULT_REGION: ${{ secrets.SCW_DEFAULT_REGION }}
           SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
           SECRETS_MASTER_KEY: ${{ secrets.SECRETS_MASTER_KEY }}
           SECRETS_DB_PASSWORD: ${{ secrets.SECRETS_DB_PASSWORD }}
@@ -141,7 +138,6 @@ jobs:
         env:
           SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
           SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
-          SCW_DEFAULT_REGION: ${{ secrets.SCW_DEFAULT_REGION }}
           SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
         run: |
           {

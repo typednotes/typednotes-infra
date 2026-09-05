@@ -113,13 +113,18 @@ It declares an `environment: production`; **add required reviewers to that envir
 Settings → Environments** if you want every apply to need a second pair of eyes. That is the one
 gate the workflow file cannot enforce for itself.
 
-Repo secrets needed: `SCW_ACCESS_KEY`, `SCW_SECRET_KEY`, `SCW_DEFAULT_REGION` and
-`SCW_DEFAULT_PROJECT_ID` for both workflows, plus `SECRETS_MASTER_KEY` and
-`SECRETS_DB_PASSWORD` for `apply.yml` — the values behind the two `fromEnv` secrets in
-`Fleet.lean`, needed only when those are first created. The composed database URL is never
-supplied here; the engine builds it at apply time.
+Repo secrets needed: `SCW_ACCESS_KEY`, `SCW_SECRET_KEY` and `SCW_DEFAULT_PROJECT_ID` for both
+workflows, plus `SECRETS_MASTER_KEY` and `SECRETS_DB_PASSWORD` for `apply.yml` — the values
+behind the two `fromEnv` secrets in `Fleet.lean`, needed only when those are first created. The
+composed database URL is never supplied here; the engine builds it at apply time.
 
-`apply.yml` checks all six are non-empty **before** it touches anything, and names the missing
+`SCW_DEFAULT_REGION` **is no longer one of them.** `Fleet.lean` declares `in paris`, so `infra`
+builds every Scaleway endpoint from the declaration rather than the environment. It was the one
+secret that was not a secret, and having it there meant CI could quietly run against a region
+other than the `fr-par` in the container image's own URL — the account guard checks the
+organization, not the place. The secret can be deleted; leaving it set does nothing.
+
+`apply.yml` checks all five are non-empty **before** it touches anything, and names the missing
 ones. That matters for the two `SECRETS_*` values in particular: they are not credentials, so
 nothing else would notice they were absent until the backend tried to create that secret —
 which is after the database already exists, leaving a half-applied fleet.
