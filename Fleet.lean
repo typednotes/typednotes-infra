@@ -37,6 +37,11 @@ import Infra
   Declaring it here removes the secret and the disagreement: `infra` builds
   every Scaleway endpoint from this rather than from the environment.
 
+  Every resource here is Scaleway's, so the cloud is written once in a
+  `provider` block rather than six times. That is grouping and nothing else —
+  `infra`'s `Infra/Demo.lean` declares one fleet both ways and guards that the
+  keys, names, plan and ordering come out identical.
+
   **The image is mirrored into Scaleway Container Registry rather than pulled
   from GHCR.** Scaleway's docs say public external registries work but
   discourage them for production ("uncontrolled rate limiting"), and do not
@@ -50,39 +55,40 @@ open Infra.Core
 open Infra.Specs
 
 fleet typednotes in paris where
-  resource scaleway secrets "secrets-master-key" as masterKey
-    { valueFrom := fromEnv "SECRETS_MASTER_KEY" }
+  provider scaleway where
+    resource secrets "secrets-master-key" as masterKey
+      { valueFrom := fromEnv "SECRETS_MASTER_KEY" }
 
-  resource scaleway secrets "secrets-db-password" as dbPassword
-    { valueFrom := fromEnv "SECRETS_DB_PASSWORD" }
+    resource secrets "secrets-db-password" as dbPassword
+      { valueFrom := fromEnv "SECRETS_DB_PASSWORD" }
 
-  -- Composed from a secret this fleet owns and an endpoint that does not exist
-  -- until `secrets-db` is created. Both become ordering edges, so this is
-  -- created after them; the value is never known here.
-  resource scaleway secrets "secrets-db-url" as dbUrl
-    { valueFrom := composed
-        expr!"postgres://secretsadmin:{secretValueOf dbPassword}@{endpointOf secretsDb}/secrets" }
+    -- Composed from a secret this fleet owns and an endpoint that does not exist
+    -- until `secrets-db` is created. Both become ordering edges, so this is
+    -- created after them; the value is never known here.
+    resource secrets "secrets-db-url" as dbUrl
+      { valueFrom := composed
+          expr!"postgres://secretsadmin:{secretValueOf dbPassword}@{endpointOf secretsDb}/secrets" }
 
-  resource scaleway postgres "secrets-db" as secretsDb
-    { masterUsername       := "secretsadmin"
-    , masterPasswordSecret := "secrets-db-password"
-    , minCapacity          := 1
-    , maxCapacity          := 4 }
+    resource postgres "secrets-db" as secretsDb
+      { masterUsername       := "secretsadmin"
+      , masterPasswordSecret := "secrets-db-password"
+      , minCapacity          := 1
+      , maxCapacity          := 4 }
 
-  -- The namespace the container is placed into. Declared here rather than
-  -- assumed: Serverless Containers will not place a container into a namespace
-  -- that does not exist, and `namespace'` is a reference, so this is created
-  -- first and cannot be misspelled. Creating it also creates the Container
-  -- Registry namespace the image below is pushed to.
-  resource scaleway scalewayContainerNamespace "typednotes" as ns
-    { description := "typednotes services" }
+    -- The namespace the container is placed into. Declared here rather than
+    -- assumed: Serverless Containers will not place a container into a namespace
+    -- that does not exist, and `namespace'` is a reference, so this is created
+    -- first and cannot be misspelled. Creating it also creates the Container
+    -- Registry namespace the image below is pushed to.
+    resource scalewayContainerNamespace "typednotes" as ns
+      { description := "typednotes services" }
 
-  resource scaleway scalewayContainer "secrets-server"
-    { namespace' := ns
-    , image      := "rg.fr-par.scw.cloud/typednotes/secrets-server:latest"
-    , port       := 8200
-    , secretEnv  := [ ("SECRETS_MASTER_KEY", masterKey)
-                    , ("SECRETS_SERVER_STORAGE_DATABASE_URL", dbUrl) ] }
+    resource scalewayContainer "secrets-server"
+      { namespace' := ns
+      , image      := "rg.fr-par.scw.cloud/typednotes/secrets-server:latest"
+      , port       := 8200
+      , secretEnv  := [ ("SECRETS_MASTER_KEY", masterKey)
+                      , ("SECRETS_SERVER_STORAGE_DATABASE_URL", dbUrl) ] }
 
 -- No plaintext secret is written into this file. Decidable, so it is checked
 -- at compile time rather than trusted — see `infra`'s `docs/diff-semantics.md`.
