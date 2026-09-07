@@ -57,4 +57,8 @@ def accounts : Infra.Cli.Accounts where
 /-- The dispatch lives in `infra`; this repo declares. -/
 def main (args : List String) : IO UInt32 :=
   Infra.Cli.run "typednotes-infra" typednotes.plan checkFleet accounts
-    (regions := typednotes.regions) (args := args)
+    (regions := typednotes.regions)
+    -- Required as of infra 0.7.0, and required rather than defaulted on
+    -- purpose: without it a `forget` in Fleet.lean would compile, pass its
+    -- own check, and then destroy the resource anyway.
+    (forgets := typednotes.forgets) (args := args)

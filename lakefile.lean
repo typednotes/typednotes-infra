@@ -79,7 +79,7 @@ run_cmd do
   mkDef `nativeLinkArgs keychain
 
 package «typednotes-infra» where
-  version := v!"0.1.0"
+  version := v!"0.2.0"
   moreLinkArgs := nativeLinkArgs
 
 require infra from git "https://github.com/typednotes/infra" @ "main"
