@@ -76,6 +76,11 @@ this repo's offline check and the accounts it is for. That shape needs **infra �
 it the front end took the plan, the placement and the releases as three separate arguments, and
 nothing stopped a call from handing over one and forgetting another.
 
+`lakefile.lean` therefore requires `infra` at the tag `v0.9.0` rather than at `main`. Moving to a
+later release is a deliberate edit — bump the tag, run `lake update infra`, read that release's
+entry in `infra`'s `CHANGELOG.md` — rather than something that happens to this repo the next time
+CI runs.
+
 Credentials come from `infra`'s three-source chain — the Scaleway CLI's own config file, the OS
 keychain, then environment variables (see `infra`'s `docs/authentication.md`). Scaleway also
 needs `default_project_id`.
