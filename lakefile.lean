@@ -82,7 +82,13 @@ package «typednotes-infra» where
   version := v!"0.2.0"
   moreLinkArgs := nativeLinkArgs
 
-require infra from git "https://github.com/typednotes/infra" @ "main"
+-- A tag rather than `main`. `Main.lean` hands the whole declaration to
+-- `Infra.Cli.run` in one value, which does not compile against an `infra`
+-- older than 0.9.0; and the reverse — tracking `main` — means the next
+-- breaking change in the front end arrives here unannounced, in whatever
+-- state it happens to be in. Moving forward is a deliberate edit: bump this,
+-- run `lake update infra`, and read the library's CHANGELOG on the way.
+require infra from git "https://github.com/typednotes/infra" @ "v0.9.0"
 
 @[default_target]
 lean_lib Fleet

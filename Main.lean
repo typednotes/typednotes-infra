@@ -53,12 +53,18 @@ def accounts : Infra.Cli.Accounts where
   expect
     | .aws      => some "616568506952"
     | .scaleway => some "4d7c630f-df06-43fe-b9e5-df729c8be4e3"
+    -- This fleet declares nothing on Google Cloud, so there is nothing to
+    -- check there; `none` means "do not check it". The case is required
+    -- because `expect` is total over `ProviderId`, which gained `.gcp`.
+    | .gcp      => none
 
-/-- The dispatch lives in `infra`; this repo declares. -/
+/-- The dispatch lives in `infra`; this repo declares.
+
+    `typednotes` is the whole declaration — its keys, its plan, its `in paris`
+    placement and its `forget`s — as the single value the `fleet` command
+    builds. As of infra 0.9.0 the front end takes that rather than three
+    arguments prised out of it, so there is no longer a way for this file to
+    hand over the plan and leave the placement or the releases behind. -/
 def main (args : List String) : IO UInt32 :=
-  Infra.Cli.run "typednotes-infra" typednotes.plan checkFleet accounts
-    (regions := typednotes.regions)
-    -- Required as of infra 0.7.0, and required rather than defaulted on
-    -- purpose: without it a `forget` in Fleet.lean would compile, pass its
-    -- own check, and then destroy the resource anyway.
-    (forgets := typednotes.forgets) (args := args)
+  Infra.Cli.run "typednotes-infra" typednotes
+    (selfCheck := checkFleet) (accounts := accounts) (args := args)

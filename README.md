@@ -70,6 +70,12 @@ lake exe typednotes-infra apply  # actually reconcile — the only mutating comm
 
 `lake build` only compiles. `plan` and `apply` are `infra`'s, called from here and from CI.
 
+`Main.lean` is one call: it hands `Fleet.lean`'s `typednotes` — the whole declaration, keys,
+plan, `in paris` placement and releases in a single value — to `Infra.Cli.run`, together with
+this repo's offline check and the accounts it is for. That shape needs **infra ≥ 0.9.0**; before
+it the front end took the plan, the placement and the releases as three separate arguments, and
+nothing stopped a call from handing over one and forgetting another.
+
 Credentials come from `infra`'s three-source chain — the Scaleway CLI's own config file, the OS
 keychain, then environment variables (see `infra`'s `docs/authentication.md`). Scaleway also
 needs `default_project_id`.
