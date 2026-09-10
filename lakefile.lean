@@ -88,7 +88,7 @@ package «typednotes-infra» where
 -- breaking change in the front end arrives here unannounced, in whatever
 -- state it happens to be in. Moving forward is a deliberate edit: bump this,
 -- run `lake update infra`, and read the library's CHANGELOG on the way.
-require infra from git "https://github.com/typednotes/infra" @ "v0.9.0"
+require infra from git "https://github.com/typednotes/infra" @ "b1d512b59b9fecb66610b75ea266baf0af6f2db3"
 
 @[default_target]
 lean_lib Fleet
