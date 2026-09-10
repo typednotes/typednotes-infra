@@ -19,7 +19,7 @@ open Infra.Core
 def accounts : Infra.Cli.Accounts where
   expect
     | .aws      => some "616568506952"
-    | .scaleway => some "4d7c630f-df06-43fe-b9e5-df729c8be4e3"
+    | .scaleway => some "8460bf58-4c44-431e-9df4-8eae3888b1ce"
     -- This fleet declares nothing on Google Cloud, so there is nothing to
     -- check there; `none` means "do not check it". The case is required
     -- because `expect` is total over `ProviderId`, which gained `.gcp`.
