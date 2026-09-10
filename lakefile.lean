@@ -79,7 +79,7 @@ run_cmd do
   mkDef `nativeLinkArgs keychain
 
 package «typednotes-infra» where
-  version := v!"0.2.0"
+  version := v!"0.3.0"
   moreLinkArgs := nativeLinkArgs
 
 -- A tag rather than `main`. `Main.lean` hands the whole declaration to
