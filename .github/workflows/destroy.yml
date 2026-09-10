@@ -1,0 +1,135 @@
+name: Destroy
+
+# `workflow_dispatch` is the ONLY trigger, for the same reason as `apply.yml`:
+# no `if:` condition should ever stand between a push and a live teardown —
+# the trigger simply does not exist.
+#
+# Same three gates as `apply.yml`, one made stricter because this one deletes
+# rather than reconciles:
+#   1. `confirm` must be typed exactly, and its required text names the
+#      action ("destroy typednotes") rather than just the fleet, so it cannot
+#      be satisfied by muscle memory from running `apply`.
+#   2. `environment:` lets the repo owner require a reviewer in Settings →
+#      Environments — the compensating control for a workflow whose entire
+#      purpose is deleting things.
+#   3. What is about to be torn down is printed and kept in the log
+#      immediately before it happens, so what was destroyed is recoverable
+#      afterwards.
+#
+# `destroy` is `apply` against an empty declaration (see `infra`'s
+# `Infra/Cli.lean`), not a second teardown mechanism — it deletes everything
+# the ledger records as managed, in dependency order, and needs no
+# `SECRETS_MASTER_KEY`/`SECRETS_DB_PASSWORD` since it never creates a secret.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "destroy typednotes" to confirm tearing the whole fleet down'
+        required: true
+        type: string
+
+# The same group `apply.yml` uses, so a destroy can never race an apply
+# against the same resources. Queued rather than cancelled: a half-finished
+# teardown is worse than a late one.
+concurrency:
+  group: apply-typednotes
+  cancel-in-progress: false
+
+jobs:
+  destroy:
+    runs-on: ubuntu-latest
+    if: inputs.confirm == 'destroy typednotes'
+    environment: production
+    steps:
+      - uses: actions/checkout@v5
+      # Same native FFI dependency set as `apply.yml`, for the same reason:
+      # `Infra` pulls in all of Linen's `extern_lib`, not just the parts this
+      # fleet touches.
+      - name: Install native FFI dependencies
+        run: sudo apt-get update && sudo apt-get install -y libpq-dev libssl-dev libsecret-1-dev pkg-config ca-certificates
+      - uses: leanprover/lean-action@v1
+      # Lean's toolchain bundles a *static* OpenSSL whose compile-time
+      # `OPENSSLDIR` points at whatever machine built it, so on a fresh runner
+      # there is no trust store and every certificate fails to verify with
+      # "certificate verify failed". `SSL_CTX_set_default_verify_paths` — which
+      # is what Linen's TLS client calls — honours these two variables, so this
+      # points it at the runner's own bundle. See `infra`'s
+      # `docs/authentication.md`.
+      - name: Point OpenSSL at the runner's CA bundle
+        run: |
+          for f in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt; do
+            if [ -f "$f" ]; then echo "SSL_CERT_FILE=$f" >> "$GITHUB_ENV"; break; fi
+          done
+          echo "SSL_CERT_DIR=/etc/ssl/certs" >> "$GITHUB_ENV"
+
+      # Offline, credential-free, and first: if the declared fleet does not
+      # even satisfy its own checks, nothing should reach a cloud.
+      - name: Run offline self-checks
+        run: lake exe typednotes-infra check
+
+      # Only the Scaleway credentials: destroying never creates a secret, so
+      # neither `SECRETS_MASTER_KEY` nor `SECRETS_DB_PASSWORD` is read here —
+      # unlike `apply.yml`, which needs both the one time each secret is
+      # first created.
+      - name: Check required secrets are present
+        env:
+          SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
+          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
+          SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
+          SCW_DEFAULT_ORGANIZATION_ID: ${{ secrets.SCW_DEFAULT_ORGANIZATION_ID }}
+        run: |
+          missing=()
+          for v in SCW_ACCESS_KEY SCW_SECRET_KEY \
+                   SCW_DEFAULT_PROJECT_ID SCW_DEFAULT_ORGANIZATION_ID; do
+            [ -n "${!v}" ] || missing+=("$v")
+          done
+          if [ ${#missing[@]} -ne 0 ]; then
+            echo "Missing repo secrets: ${missing[*]}" >&2
+            echo "Add them under Settings -> Secrets and variables -> Actions." >&2
+            exit 1
+          fi
+          echo "All required secrets are present."
+
+      # What is about to be deleted, printed before anything is: `plan
+      # --destroy` shows the teardown without doing it.
+      - name: Preview the teardown
+        env:
+          SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
+          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
+          SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
+          SCW_DEFAULT_ORGANIZATION_ID: ${{ secrets.SCW_DEFAULT_ORGANIZATION_ID }}
+        run: |
+          {
+            echo '### About to destroy'
+            echo '```'
+            lake exe typednotes-infra plan --destroy
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # The mutating step. `destroy` needs no `--force`: the brake in
+      # `Engine.lean` only fires when the target still declares something,
+      # and an empty declaration — which `destroy` is — never does.
+      - name: Destroy
+        env:
+          SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
+          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
+          SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
+          SCW_DEFAULT_ORGANIZATION_ID: ${{ secrets.SCW_DEFAULT_ORGANIZATION_ID }}
+        run: lake exe typednotes-infra destroy
+
+      # A clean teardown leaves nothing left to tear down, so this should
+      # print "nothing to do". If it does not, the log says what is still
+      # standing instead of leaving it to be discovered later.
+      - name: Verify nothing is left
+        env:
+          SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
+          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
+          SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
+          SCW_DEFAULT_ORGANIZATION_ID: ${{ secrets.SCW_DEFAULT_ORGANIZATION_ID }}
+        run: |
+          {
+            echo '### State after destroy'
+            echo '```'
+            lake exe typednotes-infra plan --destroy
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
