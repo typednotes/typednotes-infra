@@ -42,13 +42,15 @@ import Infra
   `infra`'s `Infra/Demo.lean` declares one fleet both ways and guards that the
   keys, names, plan and ordering come out identical.
 
-  **The image is mirrored into Scaleway Container Registry rather than pulled
-  from GHCR.** Scaleway's docs say public external registries work but
-  discourage them for production ("uncontrolled rate limiting"), and do not
-  support private ones at all — and this GHCR package is private. The
-  `secrets` repo's `docker-publish.yml` pushes there via `skopeo copy`.
-  Neither half of that has been confirmed against a live account; see
-  `infra`'s `docs/providers.md`.
+  **For now, the image is pulled straight from GHCR** —
+  `ghcr.io/typednotes/secrets-server:latest`, which is public — rather than
+  mirrored into Scaleway Container Registry. Scaleway's docs say pulling a
+  public external image works but discourage it for production
+  ("uncontrolled rate limiting"), and the `secrets` repo's
+  `docker-publish.yml` already has a `skopeo copy` step ready to mirror
+  `latest` into `rg.fr-par.scw.cloud/typednotes/secrets-server:latest` on a
+  tagged release. Switch `image` below to that once it's actually been run
+  and the tag exists there.
 -/
 
 open Infra.Core
@@ -85,7 +87,7 @@ fleet typednotes in paris where
 
     resource scalewayContainer "secrets-server"
       { namespace' := ns
-      , image      := "rg.fr-par.scw.cloud/typednotes/secrets-server:latest"
+      , image      := "ghcr.io/typednotes/secrets-server:latest"
       , port       := 8200
       , secretEnv  := [ ("SECRETS_MASTER_KEY", masterKey)
                       , ("SECRETS_SERVER_STORAGE_DATABASE_URL", dbUrl) ] }
@@ -97,8 +99,7 @@ fleet typednotes in paris where
 -- Scaleway only: AWS credentials are neither needed nor read.
 #guard typednotes.keys.providers = [.scaleway]
 
--- Paris means `fr-par` here, which is the region in the image URL above. The
--- two are separate mechanisms — one is a placement, the other is a hostname in
--- a string — so this guard is what notices if either moves without the other.
+-- Paris means `fr-par` here. Independent of the image's registry host — the
+-- container's own placement is the only thing this guard is about.
 #guard (typednotes.regions.region .scaleway).map Region.code = some "fr-par"
 #guard typednotes.regions.covers typednotes.keys
