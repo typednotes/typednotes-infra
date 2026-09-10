@@ -109,7 +109,7 @@ lake exe typednotes-infra apply
 
 ## CI
 
-Two workflows, split so that nothing which changes a cloud can be reached from a commit.
+Three workflows, split so that nothing which changes a cloud can be reached from a commit.
 
 **`plan.yml`** runs `check` on every push and pull request, and additionally posts a live `plan`
 to the run summary on pushes to `main`. It never applies.
@@ -120,13 +120,21 @@ checks, prints the plan it is about to apply, applies via `lake script run apply
 prints the state afterwards (a clean apply leaves `nothing to do`). Concurrent runs queue rather
 than race.
 
-It declares an `environment: production`; **add required reviewers to that environment in
-Settings → Environments** if you want every apply to need a second pair of eyes. That is the one
-gate the workflow file cannot enforce for itself.
+**`destroy.yml`** is the manual teardown — `apply` against an empty declaration, in `infra`'s own
+terms. Also `workflow_dispatch`-only, and its confirmation phrase is `destroy typednotes` rather
+than `typednotes`, so it cannot be triggered by muscle memory from running `apply`. It prints what
+is about to be deleted (`plan --destroy`), destroys, then prints the teardown plan again (a clean
+teardown leaves `nothing to do`). It shares `apply.yml`'s concurrency group, so the two can never
+race the same resources, and needs neither `SECRETS_MASTER_KEY` nor `SECRETS_DB_PASSWORD` since
+destroying never creates a secret.
+
+All three declare an `environment: production`; **add required reviewers to that environment in
+Settings → Environments** if you want every apply or destroy to need a second pair of eyes. That
+is the one gate the workflow files cannot enforce for themselves.
 
 Repo secrets needed: `SCW_ACCESS_KEY`, `SCW_SECRET_KEY`, `SCW_DEFAULT_PROJECT_ID` and
-`SCW_DEFAULT_ORGANIZATION_ID` for both workflows, plus `SECRETS_MASTER_KEY` and
-`SECRETS_DB_PASSWORD` for `apply.yml` — the values behind the two `fromEnv` secrets in
+`SCW_DEFAULT_ORGANIZATION_ID` for all three workflows, plus `SECRETS_MASTER_KEY` and
+`SECRETS_DB_PASSWORD` for `apply.yml` only — the values behind the two `fromEnv` secrets in
 `Fleet.lean`, needed only when those are first created. The composed database URL is never
 supplied here; the engine builds it at apply time.
 
