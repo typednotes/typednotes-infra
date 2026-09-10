@@ -124,10 +124,17 @@ It declares an `environment: production`; **add required reviewers to that envir
 Settings → Environments** if you want every apply to need a second pair of eyes. That is the one
 gate the workflow file cannot enforce for itself.
 
-Repo secrets needed: `SCW_ACCESS_KEY`, `SCW_SECRET_KEY` and `SCW_DEFAULT_PROJECT_ID` for both
-workflows, plus `SECRETS_MASTER_KEY` and `SECRETS_DB_PASSWORD` for `apply.yml` — the values
-behind the two `fromEnv` secrets in `Fleet.lean`, needed only when those are first created. The
-composed database URL is never supplied here; the engine builds it at apply time.
+Repo secrets needed: `SCW_ACCESS_KEY`, `SCW_SECRET_KEY`, `SCW_DEFAULT_PROJECT_ID` and
+`SCW_DEFAULT_ORGANIZATION_ID` for both workflows, plus `SECRETS_MASTER_KEY` and
+`SECRETS_DB_PASSWORD` for `apply.yml` — the values behind the two `fromEnv` secrets in
+`Fleet.lean`, needed only when those are first created. The composed database URL is never
+supplied here; the engine builds it at apply time.
+
+`SCW_DEFAULT_ORGANIZATION_ID` is what `checkAccounts` uses to establish which Scaleway
+organization the credentials belong to (see `accounts` in `Main.lean`) — without it the API
+key's own record is asked instead, but a CI runner's key may not have permission to read that,
+in which case the account guard fails closed with "could not establish which scaleway account
+these credentials belong to" rather than skip the check.
 
 `SCW_DEFAULT_REGION` **is no longer one of them.** `Fleet.lean` declares `in paris`, so `infra`
 builds every Scaleway endpoint from the declaration rather than the environment. It was the one

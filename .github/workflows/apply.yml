@@ -82,12 +82,14 @@ jobs:
           SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
           SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
           SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
+          SCW_DEFAULT_ORGANIZATION_ID: ${{ secrets.SCW_DEFAULT_ORGANIZATION_ID }}
           SECRETS_MASTER_KEY: ${{ secrets.SECRETS_MASTER_KEY }}
           SECRETS_DB_PASSWORD: ${{ secrets.SECRETS_DB_PASSWORD }}
         run: |
           missing=()
           for v in SCW_ACCESS_KEY SCW_SECRET_KEY \
-                   SCW_DEFAULT_PROJECT_ID SECRETS_MASTER_KEY SECRETS_DB_PASSWORD; do
+                   SCW_DEFAULT_PROJECT_ID SCW_DEFAULT_ORGANIZATION_ID \
+                   SECRETS_MASTER_KEY SECRETS_DB_PASSWORD; do
             [ -n "${!v}" ] || missing+=("$v")
           done
           if [ ${#missing[@]} -ne 0 ]; then
@@ -109,6 +111,7 @@ jobs:
           SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
           SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
           SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
+          SCW_DEFAULT_ORGANIZATION_ID: ${{ secrets.SCW_DEFAULT_ORGANIZATION_ID }}
         run: |
           {
             echo '### Plan being applied'
@@ -126,6 +129,7 @@ jobs:
           SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
           SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
           SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
+          SCW_DEFAULT_ORGANIZATION_ID: ${{ secrets.SCW_DEFAULT_ORGANIZATION_ID }}
           SECRETS_MASTER_KEY: ${{ secrets.SECRETS_MASTER_KEY }}
           SECRETS_DB_PASSWORD: ${{ secrets.SECRETS_DB_PASSWORD }}
         run: lake script run apply --yes
@@ -139,6 +143,7 @@ jobs:
           SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
           SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
           SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
+          SCW_DEFAULT_ORGANIZATION_ID: ${{ secrets.SCW_DEFAULT_ORGANIZATION_ID }}
         run: |
           {
             echo '### State after apply'
