@@ -16,14 +16,14 @@ import Infra
   ## The `secrets-server` target
 
   A Scaleway Serverless Container backed by a serverless Postgres database,
-  plus the three secrets it needs: its own master key, the database's master
-  password, and the database URL.
+  plus the four secrets it needs: its own master key, the two halves of the
+  IAM API key the database authenticates, and the database URL.
 
   **The database URL is composed at apply time, not by hand.** Its value needs
-  the master password *and* the endpoint Scaleway assigns when the database is
+  the API key *and* the endpoint Scaleway assigns when the database is
   created, so it used to take two applies with an operator pasting a
   connection string in between. `composed` holds the function instead; `infra`
-  orders the password and the database before it and evaluates it once, at
+  orders the key and the database before it and evaluates it once, at
   apply time, without the value ever entering this file, the plan output, or
   the `.infra/` cache. **One `push --apply` deploys the whole fleet.**
 
@@ -61,19 +61,35 @@ fleet typednotes in paris where
     resource secrets "secrets-master-key" as masterKey
       { valueFrom := fromEnv "SECRETS_MASTER_KEY" }
 
-    resource secrets "secrets-db-password" as dbPassword
-      { valueFrom := fromEnv "SECRETS_DB_PASSWORD" }
+    -- **The database credential is an IAM API key, not a master password.**
+    -- Serverless SQL Database has no master user: it authenticates the
+    -- *connection* through IAM, with an API key's access key as the Postgres
+    -- username and its secret key as the password. The principal holding it
+    -- needs the project-scoped `ServerlessSQLDatabaseDataReadWrite`
+    -- permission set — `AllProductsFullAccess` is not enough, because that
+    -- covers managing databases rather than connecting to one.
+    --
+    -- Both halves are carried as secrets, though only the second is really
+    -- secret. An access key is an identifier and appears in the console, but
+    -- it is one half of a pair that has to rotate as a unit, and keeping it
+    -- here rather than as a literal below means rotating the key is a secret
+    -- change rather than a commit.
+    resource secrets "secrets-db-iam-access-key" as dbIamAccessKey
+      { valueFrom := fromEnv "SECRETS_DB_IAM_ACCESS_KEY" }
+
+    resource secrets "secrets-db-iam-secret-key" as dbIamSecretKey
+      { valueFrom := fromEnv "SECRETS_DB_IAM_SECRET_KEY" }
 
     -- Composed from a secret this fleet owns and an endpoint that does not exist
     -- until `secrets-db` is created. Both become ordering edges, so this is
     -- created after them; the value is never known here.
     --
-    -- **The password is percent-encoded, and has to be.** Whatever
-    -- `SECRETS_DB_PASSWORD` holds goes into the URL's *authority*, where `/`,
-    -- `@`, `:`, `#` and `?` are punctuation rather than data. A single `/` in
-    -- it ends the authority early, so the parser reads `secretsadmin` as the
-    -- host and the fragment after the colon as the port, and `PgPool::connect`
-    -- refuses the whole string with "invalid port number".
+    -- **Both halves are percent-encoded, and have to be.** An API key's
+    -- secret goes into the URL's *authority*, where `/`, `@`, `:`, `#` and
+    -- `?` are punctuation rather than data. A single `/` in it ends the
+    -- authority early, so the parser reads the username as the host and the
+    -- fragment after the colon as the port, and `PgPool::connect` refuses the
+    -- whole string with "invalid port number".
     --
     -- That is not hypothetical: the container crash-looped on exactly this,
     -- and the error named a port rather than a password because nothing may
@@ -85,13 +101,28 @@ fleet typednotes in paris where
     -- the ones that happen to avoid those five characters.
     resource secrets "secrets-db-url" as dbUrl
       { valueFrom := composed
-          expr!"postgres://secretsadmin:\
-{(secretValueOf dbPassword).map Network.HTTP.Types.urlEncode}\
-@{endpointOf secretsDb}/secrets" }
+          expr!"postgres://\
+{(secretValueOf dbIamAccessKey).map Network.HTTP.Types.urlEncode}:\
+{(secretValueOf dbIamSecretKey).map Network.HTTP.Types.urlEncode}\
+@{endpointOf secretsDb}/secrets-db?sslmode=require" }
 
+    -- `masterUsername` is **required by the spec and discarded by this
+    -- backend**. `ServerlessSql.create` takes it as `_masterUsername` and
+    -- never puts it in the payload, because the product has no master user
+    -- to create — the connection authenticates through IAM instead, see the
+    -- note above. It is spelled `unused` rather than given a plausible name
+    -- like `secretsadmin`, because a plausible name is what made this look
+    -- provisioned when it never was: the composed URL used it for weeks, and
+    -- the database refused every connection with `password authentication
+    -- failed for user "secretsadmin"`.
+    --
+    -- `masterPasswordSecret` is discarded the same way, but it is pointed at
+    -- the secret that really does hold the connecting password, so it stays
+    -- true as documentation and would already be right if this ever moved to
+    -- a classic managed instance.
     resource postgres "secrets-db" as secretsDb
-      { masterUsername       := "secretsadmin"
-      , masterPasswordSecret := "secrets-db-password"
+      { masterUsername       := "unused"
+      , masterPasswordSecret := "secrets-db-iam-secret-key"
       , minCapacity          := 1
       , maxCapacity          := 4 }
 

@@ -66,8 +66,8 @@ jobs:
 
       # Fail before touching anything if a required secret is missing.
       #
-      # Not redundant with `infra`'s own credential error. The two `SECRETS_*`
-      # values are not credentials — they are the values behind `Fleet.lean`'s
+      # Not redundant with `infra`'s own credential error. The three `SECRETS_*`
+      # values are not the deploy credentials — they are the values behind `Fleet.lean`'s
       # `fromEnv` secrets, read by the Scaleway backend at the moment each
       # secret is *created*. A missing one therefore fails partway through,
       # after the database already exists, leaving a half-applied fleet to
@@ -84,12 +84,14 @@ jobs:
           SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
           SCW_DEFAULT_ORGANIZATION_ID: ${{ secrets.SCW_DEFAULT_ORGANIZATION_ID }}
           SECRETS_MASTER_KEY: ${{ secrets.SECRETS_MASTER_KEY }}
-          SECRETS_DB_PASSWORD: ${{ secrets.SECRETS_DB_PASSWORD }}
+          SECRETS_DB_IAM_ACCESS_KEY: ${{ secrets.SECRETS_DB_IAM_ACCESS_KEY }}
+          SECRETS_DB_IAM_SECRET_KEY: ${{ secrets.SECRETS_DB_IAM_SECRET_KEY }}
         run: |
           missing=()
           for v in SCW_ACCESS_KEY SCW_SECRET_KEY \
                    SCW_DEFAULT_PROJECT_ID SCW_DEFAULT_ORGANIZATION_ID \
-                   SECRETS_MASTER_KEY SECRETS_DB_PASSWORD; do
+                   SECRETS_MASTER_KEY \
+                   SECRETS_DB_IAM_ACCESS_KEY SECRETS_DB_IAM_SECRET_KEY; do
             [ -n "${!v}" ] || missing+=("$v")
           done
           if [ ${#missing[@]} -ne 0 ]; then
@@ -102,10 +104,16 @@ jobs:
       # Scaleway only — `Infra.Cli` authenticates just the clouds the fleet
       # declares into, so no AWS secrets are needed or read.
       #
-      # `SECRETS_MASTER_KEY` and `SECRETS_DB_PASSWORD` are the values the two
-      # `fromEnv` secrets in `Fleet.lean` read. They are *only* needed when
-      # those secrets are first created; the composed database URL is built by
-      # the engine at apply time and is never supplied here.
+      # `SECRETS_MASTER_KEY`, `SECRETS_DB_IAM_ACCESS_KEY` and
+      # `SECRETS_DB_IAM_SECRET_KEY` are the values the three `fromEnv` secrets
+      # in `Fleet.lean` read. They are *only* needed when those secrets are
+      # first created; the composed database URL is built by the engine at
+      # apply time and is never supplied here.
+      #
+      # The two `..._IAM_...` values are one Scaleway API key — Serverless SQL
+      # Database authenticates the connection through IAM rather than with a
+      # master password, so the key's principal needs the project-scoped
+      # `ServerlessSQLDatabaseDataReadWrite` permission set.
       - name: Plan
         env:
           SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
@@ -131,7 +139,8 @@ jobs:
           SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
           SCW_DEFAULT_ORGANIZATION_ID: ${{ secrets.SCW_DEFAULT_ORGANIZATION_ID }}
           SECRETS_MASTER_KEY: ${{ secrets.SECRETS_MASTER_KEY }}
-          SECRETS_DB_PASSWORD: ${{ secrets.SECRETS_DB_PASSWORD }}
+          SECRETS_DB_IAM_ACCESS_KEY: ${{ secrets.SECRETS_DB_IAM_ACCESS_KEY }}
+          SECRETS_DB_IAM_SECRET_KEY: ${{ secrets.SECRETS_DB_IAM_SECRET_KEY }}
         run: lake script run apply --yes
 
       # What the account looks like afterwards. A clean apply leaves nothing
