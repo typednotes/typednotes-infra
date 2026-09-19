@@ -67,9 +67,27 @@ fleet typednotes in paris where
     -- Composed from a secret this fleet owns and an endpoint that does not exist
     -- until `secrets-db` is created. Both become ordering edges, so this is
     -- created after them; the value is never known here.
+    --
+    -- **The password is percent-encoded, and has to be.** Whatever
+    -- `SECRETS_DB_PASSWORD` holds goes into the URL's *authority*, where `/`,
+    -- `@`, `:`, `#` and `?` are punctuation rather than data. A single `/` in
+    -- it ends the authority early, so the parser reads `secretsadmin` as the
+    -- host and the fragment after the colon as the port, and `PgPool::connect`
+    -- refuses the whole string with "invalid port number".
+    --
+    -- That is not hypothetical: the container crash-looped on exactly this,
+    -- and the error named a port rather than a password because nothing may
+    -- print the value — not this file, not the plan, not the `.infra/` cache.
+    -- The password could not be inspected, so the message was the only
+    -- evidence, and it pointed at the wrong field. `urlEncode` escapes
+    -- everything outside RFC 3986 §2.3's unreserved set (`A-Za-z0-9-_.~`),
+    -- which makes the composition correct for *any* password rather than for
+    -- the ones that happen to avoid those five characters.
     resource secrets "secrets-db-url" as dbUrl
       { valueFrom := composed
-          expr!"postgres://secretsadmin:{secretValueOf dbPassword}@{endpointOf secretsDb}/secrets" }
+          expr!"postgres://secretsadmin:\
+{(secretValueOf dbPassword).map Network.HTTP.Types.urlEncode}\
+@{endpointOf secretsDb}/secrets" }
 
     resource postgres "secrets-db" as secretsDb
       { masterUsername       := "secretsadmin"
