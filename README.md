@@ -15,13 +15,14 @@ unconditionally.
 
 ## What's declared
 
-`Fleet.lean` is the whole declaration. It manages seven Scaleway resources:
+`Fleet.lean` is the whole declaration. It manages eight Scaleway resources:
 
 | | |
 |---|---|
 | `secrets-server` | a Serverless Container running [`secrets`](https://github.com/typednotes/secrets) |
 | `secrets-db` | a serverless Postgres database backing it |
 | `secrets-master-key` | the container's own master key |
+| `secrets-bootstrap-password` | password for the initial `admin` user, read only on first start |
 | `secrets-db-app` | the IAM application the database authenticates as |
 | `secrets-db-key` | its API key, minted at apply and never readable again |
 | `secrets-db-url` | the connection string, composed at apply time |
@@ -52,6 +53,7 @@ So the whole fleet deploys in a single apply:
 ```
 would CREATE scaleway/iam/secrets-db-app
 would CREATE scaleway/secrets/secrets-master-key
+would CREATE scaleway/secrets/secrets-bootstrap-password
 would CREATE scaleway/postgres/secrets-db
 would CREATE scaleway/scaleway-container-namespace/typednotes
 would CREATE scaleway/secrets/secrets-db-key
@@ -112,9 +114,17 @@ Before the first apply, two things exist outside this repo:
    identically, the plan proposes nothing, and the container goes on running what it first
    pulled. Deploying 0.1.1 over 0.1.0 needed the container deleted by hand for exactly that
    reason. With a version, a release is an ordinary diff and the plan says `UPDATE`.
-2. **The one env var a secret reads**: `SECRETS_MASTER_KEY`. It names a variable, never a
-   value — nothing secret is committed here. Generate it and keep it somewhere durable: losing
-   it means losing what the server encrypted.
+2. **The two env vars the secrets read**: `SECRETS_MASTER_KEY` and
+   `SECRETS_BOOTSTRAP_PASSWORD`. These name variables, never values — nothing secret is
+   committed here. Generate the master key and keep it somewhere durable: losing it means
+   losing what the server encrypted.
+
+   `SECRETS_BOOTSTRAP_PASSWORD` is the password for the server's initial `admin` user, which
+   `secrets-server` creates with a full-access `root` policy the first time it starts against
+   a database with no such user. Set neither variable and the service comes up perfectly
+   healthy with no users at all and no way to obtain a token — which is how this fleet was
+   first deployed. Changing the value later does **not** rotate the password: the server only
+   reads it when the user is absent.
 
    There is deliberately **no database credential to supply**. Serverless SQL Database has no
    master user; it authenticates through IAM, and `apiKeyFor` mints the key at apply time for
@@ -129,7 +139,7 @@ Before the first apply, two things exist outside this repo:
 Then review the plan and apply:
 
 ```
-export SECRETS_MASTER_KEY=...
+export SECRETS_MASTER_KEY=...  SECRETS_BOOTSTRAP_PASSWORD=...
 lake exe typednotes-infra plan          # read this
 lake exe typednotes-infra apply
 ```
@@ -161,9 +171,9 @@ Settings → Environments** if you want every apply or destroy to need a second 
 is the one gate the workflow files cannot enforce for themselves.
 
 Repo secrets needed: `SCW_ACCESS_KEY`, `SCW_SECRET_KEY`, `SCW_DEFAULT_PROJECT_ID` and
-`SCW_DEFAULT_ORGANIZATION_ID` for all three workflows, plus `SECRETS_MASTER_KEY` for
-`apply.yml` only — the value behind the single `fromEnv` secret in `Fleet.lean`, needed only when
-that secret is first created. The composed database URL is never
+`SCW_DEFAULT_ORGANIZATION_ID` for all three workflows, plus `SECRETS_MASTER_KEY` and
+`SECRETS_BOOTSTRAP_PASSWORD` for `apply.yml` only — the values behind the two `fromEnv` secrets
+in `Fleet.lean`, needed only when those secrets are first created. The composed database URL is never
 supplied here; the engine builds it at apply time.
 
 `SCW_DEFAULT_ORGANIZATION_ID` is what `checkAccounts` uses to establish which Scaleway
@@ -179,9 +189,9 @@ other than the `fr-par` in the container image's own URL — the account guard c
 organization, not the place. The secret can be deleted; leaving it set does nothing.
 
 `apply.yml` checks all five are non-empty **before** it touches anything, and names the missing
-ones. That matters for `SECRETS_MASTER_KEY` in particular: it is not a credential, so nothing
-else would notice it was absent until the backend tried to create that secret — which is after
-the database already exists, leaving a half-applied fleet.
+ones. That matters for the two `SECRETS_*` values in particular: they are not credentials, so
+nothing else would notice they were absent until the backend tried to create that secret —
+which is after the database already exists, leaving a half-applied fleet.
 
 Both workflows also point OpenSSL at the runner's CA bundle (`SSL_CERT_FILE`/`SSL_CERT_DIR`).
 Without it, any live call fails with `certificate verify failed`: Lean's toolchain bundles a
