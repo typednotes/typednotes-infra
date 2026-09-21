@@ -62,15 +62,23 @@ import Infra
   `infra`'s `Infra/Demo.lean` declares one fleet both ways and guards that the
   keys, names, plan and ordering come out identical.
 
-  **For now, the image is pulled straight from GHCR** —
-  `ghcr.io/typednotes/secrets-server:latest`, which is public — rather than
+  **The image is pinned to a version, not `latest`.** `image` is compared as
+  a string, so a moving tag is invisible to the differ: republishing
+  `latest` changes the digest while the declaration reads identically, the
+  plan proposes nothing, and the container keeps running whatever it pulled
+  when it was created. That is not hypothetical — deploying 0.1.1 over
+  0.1.0 needed the container deleted by hand before `apply` would recreate
+  it, because nothing in the declaration had changed. A version here makes a
+  release an ordinary diff: bump the tag, and the plan says `UPDATE`.
+
+  **It is pulled straight from GHCR** — which is public — rather than
   mirrored into Scaleway Container Registry. Scaleway's docs say pulling a
   public external image works but discourage it for production
   ("uncontrolled rate limiting"), and the `secrets` repo's
-  `docker-publish.yml` already has a `skopeo copy` step ready to mirror
-  `latest` into `rg.fr-par.scw.cloud/typednotes/secrets-server:latest` on a
-  tagged release. Switch `image` below to that once it's actually been run
-  and the tag exists there.
+  `docker-publish.yml` has a `skopeo copy` step that mirrors into
+  `rg.fr-par.scw.cloud/typednotes/secrets-server:latest` on a tagged
+  release. Switching to that means pointing `image` at the mirror *and*
+  giving it a version rather than `latest`, for the reason above.
 -/
 
 open Infra.Core
@@ -160,7 +168,9 @@ fleet typednotes in paris where
 
     resource scalewayContainer "secrets-server"
       { namespace' := ns
-      , image      := "ghcr.io/typednotes/secrets-server:latest"
+      -- Pinned, not `latest`: see the header. A moving tag cannot be
+      -- diffed, so a new release would apply as a no-op.
+      , image      := "ghcr.io/typednotes/secrets-server:0.1.1"
       , port       := 8200
       , secretEnv  := [ ("SECRETS_MASTER_KEY", masterKey)
                       , ("SECRETS_SERVER_STORAGE_DATABASE_URL", dbUrl) ] }
