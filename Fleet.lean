@@ -16,9 +16,9 @@ import Infra
   ## The `secrets-server` target
 
   A Scaleway Serverless Container backed by a serverless Postgres database,
-  plus the IAM identity that database authenticates and the three secrets:
-  the container's own master key, the identity's minted API key, and the
-  database URL.
+  plus the IAM identity that database authenticates and the four secrets:
+  the container's own master key, the password for its initial `admin`
+  user, the identity's minted API key, and the database URL.
 
   **Serverless SQL Database has no master user.** There is no root password
   to set: authentication is IAM, the PostgreSQL user name is an IAM
@@ -110,6 +110,21 @@ fleet typednotes in paris where
     resource secrets "secrets-master-key" as masterKey
       { valueFrom := fromEnv "SECRETS_MASTER_KEY" }
 
+    -- The password for the initial `admin` user. `secrets-server` creates
+    -- that user, with a full-access `root` policy, **only** when both
+    -- `SECRETS_SERVER_BOOTSTRAP_USERNAME` and `..._PASSWORD` are set at
+    -- startup; with neither, it comes up with no users at all and nothing
+    -- can log in. This fleet deployed that way once — the service answered
+    -- `/v1/sys/health` with an empty `kv_store` and no way to get a token.
+    --
+    -- `bootstrap_admin` is a no-op once the user exists, so this stays
+    -- declared rather than being a one-shot: it is what the *first* start
+    -- against an empty database needs, including after a teardown.
+    -- Changing the value here does **not** rotate the password; the server
+    -- only reads it when the user is absent.
+    resource secrets "secrets-bootstrap-password" as bootstrapPassword
+      { valueFrom := fromEnv "SECRETS_BOOTSTRAP_PASSWORD" }
+
     -- The identity the database authenticates. On Scaleway an `iam` resource
     -- is an IAM *application*, and `policies` is a list of permission-set
     -- names granted over the credentials' project.
@@ -122,7 +137,7 @@ fleet typednotes in paris where
     resource postgres "secrets-db" as secretsDb
       { masterUsername       := "unused-serverless-sql-is-iam-only"
       , masterPasswordSecret := "unused-serverless-sql-is-iam-only"
-      , minCapacity          := 1
+      , minCapacity          := 0
       , maxCapacity          := 4 }
 
     -- Minted at apply, for the application above. The value is the key's
@@ -172,7 +187,13 @@ fleet typednotes in paris where
       -- diffed, so a new release would apply as a no-op.
       , image      := "ghcr.io/typednotes/secrets-server:0.1.1"
       , port       := 8200
+      -- Plain `env`, not `secretEnv`: a username is not a secret, and
+      -- putting it here keeps it visible in the plan and the console where
+      -- it is useful. Its partner password is a secret binding below;
+      -- `config.validate()` rejects one without the other.
+      , env        := [ ("SECRETS_SERVER_BOOTSTRAP_USERNAME", "admin") ]
       , secretEnv  := [ ("SECRETS_MASTER_KEY", masterKey)
+                      , ("SECRETS_SERVER_BOOTSTRAP_PASSWORD", bootstrapPassword)
                       , ("SECRETS_SERVER_STORAGE_DATABASE_URL", dbUrl) ] }
 
 /-- The ownership boundary, which the `fleet` command has no syntax for: it is

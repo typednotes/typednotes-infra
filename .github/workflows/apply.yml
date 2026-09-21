@@ -84,11 +84,12 @@ jobs:
           SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
           SCW_DEFAULT_ORGANIZATION_ID: ${{ secrets.SCW_DEFAULT_ORGANIZATION_ID }}
           SECRETS_MASTER_KEY: ${{ secrets.SECRETS_MASTER_KEY }}
+          SECRETS_BOOTSTRAP_PASSWORD: ${{ secrets.SECRETS_BOOTSTRAP_PASSWORD }}
         run: |
           missing=()
           for v in SCW_ACCESS_KEY SCW_SECRET_KEY \
                    SCW_DEFAULT_PROJECT_ID SCW_DEFAULT_ORGANIZATION_ID \
-                   SECRETS_MASTER_KEY; do
+                   SECRETS_MASTER_KEY SECRETS_BOOTSTRAP_PASSWORD; do
             [ -n "${!v}" ] || missing+=("$v")
           done
           if [ ${#missing[@]} -ne 0 ]; then
@@ -101,9 +102,11 @@ jobs:
       # Scaleway only — `Infra.Cli` authenticates just the clouds the fleet
       # declares into, so no AWS secrets are needed or read.
       #
-      # `SECRETS_MASTER_KEY` is the value the one `fromEnv` secret in
-      # `Fleet.lean` reads, and is *only* needed the first time that secret is
-      # created.
+      # `SECRETS_MASTER_KEY` and `SECRETS_BOOTSTRAP_PASSWORD` are the values
+      # the two `fromEnv` secrets in `Fleet.lean` read, and are *only* needed
+      # the first time each of those secrets is created. The second is the
+      # password for the server's initial `admin` user: without it the
+      # container starts with no users and nothing can log in.
       #
       # There is deliberately no database credential here. Serverless SQL
       # Database authenticates through IAM, and `apiKeyFor` mints the key at
@@ -141,6 +144,7 @@ jobs:
           SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
           SCW_DEFAULT_ORGANIZATION_ID: ${{ secrets.SCW_DEFAULT_ORGANIZATION_ID }}
           SECRETS_MASTER_KEY: ${{ secrets.SECRETS_MASTER_KEY }}
+          SECRETS_BOOTSTRAP_PASSWORD: ${{ secrets.SECRETS_BOOTSTRAP_PASSWORD }}
         run: lake script run apply --yes
 
       # What the account looks like afterwards. A clean apply leaves nothing
