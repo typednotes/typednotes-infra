@@ -15,7 +15,7 @@ unconditionally.
 
 ## What's declared
 
-`Fleet.lean` is the whole declaration. It manages six Scaleway resources:
+`Fleet.lean` is the whole declaration. It manages seven Scaleway resources:
 
 | | |
 |---|---|
@@ -32,21 +32,29 @@ Scaleway only, so AWS is never authenticated and never called — both facts are
 
 ### One apply, not two
 
-`secrets-db-url`'s value needs the master password *and* the endpoint Scaleway assigns when the
-database is created. That used to mean two `apply` runs with an operator pasting a
-connection string in between. `Fleet.lean` now declares the *function* instead, with `composed`
-over `.secretValue` and `.observed`; `infra` orders the password and the database before it and
+`secrets-db-url`'s value needs the database's credential *and* the endpoint Scaleway assigns
+when the database is created. That used to mean two `apply` runs with an operator pasting a
+connection string in between. `Fleet.lean` declares the *function* instead, with `composed`
+over `.secretValue` and `.observed`; `infra` orders the key and the database before it and
 evaluates it once, at apply time. The value never enters this repo, the plan output, or the
 `.infra/` cache.
+
+The credential itself is not supplied either. Serverless SQL Database has no master user — it
+authenticates through IAM — so `secrets-db-key` is declared with `apiKeyFor`, which mints an API
+key for the `secrets-db-app` identity at the moment the secret is created. Scaleway returns an
+API key's secret half once and never again, so it can be neither an environment variable nor an
+observed value; minting it straight into a secret is the only place it can go. The halves that
+are *not* secret — the access key and the application id — come back as observed state, which is
+how `principalOf` supplies the PostgreSQL user name.
 
 So the whole fleet deploys in a single apply:
 
 ```
-would CREATE scaleway/secrets/secrets-master-key
 would CREATE scaleway/iam/secrets-db-app
-would CREATE scaleway/secrets/secrets-db-key
+would CREATE scaleway/secrets/secrets-master-key
 would CREATE scaleway/postgres/secrets-db
 would CREATE scaleway/scaleway-container-namespace/typednotes
+would CREATE scaleway/secrets/secrets-db-key
 would CREATE scaleway/secrets/secrets-db-url
 would CREATE scaleway/scaleway-container/secrets-server
 ```
@@ -78,10 +86,10 @@ this repo's offline check and the accounts it is for. That shape needs **infra �
 it the front end took the plan, the placement and the releases as three separate arguments, and
 nothing stopped a call from handing over one and forgetting another.
 
-`lakefile.lean` therefore requires `infra` at the tag `v0.9.0` rather than at `main`. Moving to a
-later release is a deliberate edit — bump the tag, run `lake update infra`, read that release's
-entry in `infra`'s `CHANGELOG.md` — rather than something that happens to this repo the next time
-CI runs.
+`lakefile.lean` therefore requires `infra` at a tag rather than at `main` — currently
+`v0.12.1`. Moving to a later release is a deliberate edit — bump the tag, run `lake update
+infra`, read that release's entry in `infra`'s `CHANGELOG.md` — rather than something that
+happens to this repo the next time CI runs.
 
 Credentials come from `infra`'s three-source chain — the Scaleway CLI's own config file, the OS
 keychain, then environment variables (see `infra`'s `docs/authentication.md`). Scaleway also
@@ -91,12 +99,19 @@ needs `default_project_id`.
 
 Before the first apply, two things exist outside this repo:
 
-1. **The container image**, at `rg.fr-par.scw.cloud/typednotes/secrets-server:latest`. The
-   `secrets` repo's `docker-publish.yml` mirrors it there from GHCR on a tagged release, which
-   needs an `SCW_SECRET_KEY` secret on *that* repo. The image is mirrored rather than pulled
-   from `ghcr.io` directly because Scaleway's docs discourage external registries for production
-   and do not support private ones at all — neither half confirmed live; see `infra`'s
-   `docs/providers.md`.
+1. **The container image**, at `ghcr.io/typednotes/secrets-server:0.1.1` — public, and pulled
+   straight from GHCR. The `secrets` repo's `docker-publish.yml` publishes it on a `v*.*.*` tag
+   (a push to `main` only moves `edge`), and also has a `skopeo` step that mirrors `latest` into
+   `rg.fr-par.scw.cloud/typednotes/secrets-server:latest`, which needs an `SCW_SECRET_KEY`
+   secret on *that* repo. Scaleway's docs discourage external registries for production
+   ("uncontrolled rate limiting") and do not support private ones at all, so the mirror is the
+   eventual destination; see `infra`'s `docs/providers.md`.
+
+   **The tag is pinned, deliberately.** `image` is compared as a string, so `:latest` is
+   invisible to the differ — republishing moves the digest while the declaration reads
+   identically, the plan proposes nothing, and the container goes on running what it first
+   pulled. Deploying 0.1.1 over 0.1.0 needed the container deleted by hand for exactly that
+   reason. With a version, a release is an ordinary diff and the plan says `UPDATE`.
 2. **The one env var a secret reads**: `SECRETS_MASTER_KEY`. It names a variable, never a
    value — nothing secret is committed here. Generate it and keep it somewhere durable: losing
    it means losing what the server encrypted.
@@ -164,9 +179,9 @@ other than the `fr-par` in the container image's own URL — the account guard c
 organization, not the place. The secret can be deleted; leaving it set does nothing.
 
 `apply.yml` checks all five are non-empty **before** it touches anything, and names the missing
-ones. That matters for the two `SECRETS_*` values in particular: they are not credentials, so
-nothing else would notice they were absent until the backend tried to create that secret —
-which is after the database already exists, leaving a half-applied fleet.
+ones. That matters for `SECRETS_MASTER_KEY` in particular: it is not a credential, so nothing
+else would notice it was absent until the backend tried to create that secret — which is after
+the database already exists, leaving a half-applied fleet.
 
 Both workflows also point OpenSSL at the runner's CA bundle (`SSL_CERT_FILE`/`SSL_CERT_DIR`).
 Without it, any live call fails with `certificate verify failed`: Lean's toolchain bundles a
