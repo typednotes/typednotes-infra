@@ -19,7 +19,7 @@ name: Destroy
 # `destroy` is `apply` against an empty declaration (see `infra`'s
 # `Infra/Cli.lean`), not a second teardown mechanism — it deletes everything
 # the ledger records as managed, in dependency order, and needs no
-# `SECRETS_MASTER_KEY`/`SECRETS_DB_IAM_*` since it never creates a secret.
+# `SECRETS_MASTER_KEY` since it never creates a secret.
 on:
   workflow_dispatch:
     inputs:
@@ -68,9 +68,10 @@ jobs:
         run: lake exe typednotes-infra check
 
       # Only the Scaleway credentials: destroying never creates a secret, so
-      # neither `SECRETS_MASTER_KEY` nor either `SECRETS_DB_IAM_*` value is
-      # read here — unlike `apply.yml`, which needs all three the one time
-      # each secret is first created.
+      # `SECRETS_MASTER_KEY` is not read here — unlike `apply.yml`, which
+      # needs it the one time that secret is first created. Destroying the
+      # minted API key needs no credential of its own: deleting the secret
+      # deletes the key it minted.
       - name: Check required secrets are present
         env:
           SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}

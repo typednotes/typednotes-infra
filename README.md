@@ -22,8 +22,8 @@ unconditionally.
 | `secrets-server` | a Serverless Container running [`secrets`](https://github.com/typednotes/secrets) |
 | `secrets-db` | a serverless Postgres database backing it |
 | `secrets-master-key` | the container's own master key |
-| `secrets-db-iam-access-key` | access key half of the IAM API key the database authenticates |
-| `secrets-db-iam-secret-key` | secret key half of that API key |
+| `secrets-db-app` | the IAM application the database authenticates as |
+| `secrets-db-key` | its API key, minted at apply and never readable again |
 | `secrets-db-url` | the connection string, composed at apply time |
 | `typednotes` | the Serverless Containers namespace the container is placed into |
 
@@ -43,8 +43,8 @@ So the whole fleet deploys in a single apply:
 
 ```
 would CREATE scaleway/secrets/secrets-master-key
-would CREATE scaleway/secrets/secrets-db-iam-access-key
-would CREATE scaleway/secrets/secrets-db-iam-secret-key
+would CREATE scaleway/iam/secrets-db-app
+would CREATE scaleway/secrets/secrets-db-key
 would CREATE scaleway/postgres/secrets-db
 would CREATE scaleway/scaleway-container-namespace/typednotes
 would CREATE scaleway/secrets/secrets-db-url
@@ -97,21 +97,22 @@ Before the first apply, two things exist outside this repo:
    from `ghcr.io` directly because Scaleway's docs discourage external registries for production
    and do not support private ones at all — neither half confirmed live; see `infra`'s
    `docs/providers.md`.
-2. **The three env vars the secrets read**: `SECRETS_MASTER_KEY`, `SECRETS_DB_IAM_ACCESS_KEY`
-   and `SECRETS_DB_IAM_SECRET_KEY`. These name variables, never values — nothing secret is
-   committed here. Generate the master key and keep it somewhere durable: losing it means losing
-   what the server encrypted.
+2. **The one env var a secret reads**: `SECRETS_MASTER_KEY`. It names a variable, never a
+   value — nothing secret is committed here. Generate it and keep it somewhere durable: losing
+   it means losing what the server encrypted.
 
-   The two `..._IAM_...` values are **one Scaleway API key**, not a database password. Serverless
-   SQL Database has no master user — it authenticates the connection through IAM — so the key's
-   principal must hold the project-scoped `ServerlessSQLDatabaseDataReadWrite` permission set.
-   `AllProductsFullAccess` is *not* enough: it covers managing databases, not connecting to one,
-   which is why an org-admin key is refused with `password authentication failed`.
+   There is deliberately **no database credential to supply**. Serverless SQL Database has no
+   master user; it authenticates through IAM, and `apiKeyFor` mints the key at apply time for
+   the `secrets-db-app` identity the fleet declares. The application holds the project-scoped
+   `ServerlessSQLDatabaseDataReadWrite` permission set — the *data* plane, not
+   `ServerlessSQLDatabaseReadWrite`, which only manages databases. `AllProductsFullAccess` does
+   not cover the data plane either, which is why an org-admin key is refused with `password
+   authentication failed`.
 
 Then review the plan and apply:
 
 ```
-export SECRETS_MASTER_KEY=...  SECRETS_DB_IAM_ACCESS_KEY=...  SECRETS_DB_IAM_SECRET_KEY=...
+export SECRETS_MASTER_KEY=...
 lake exe typednotes-infra plan          # read this
 lake exe typednotes-infra apply
 ```
@@ -134,17 +135,18 @@ terms. Also `workflow_dispatch`-only, and its confirmation phrase is `destroy ty
 than `typednotes`, so it cannot be triggered by muscle memory from running `apply`. It prints what
 is about to be deleted (`plan --destroy`), destroys, then prints the teardown plan again (a clean
 teardown leaves `nothing to do`). It shares `apply.yml`'s concurrency group, so the two can never
-race the same resources, and needs neither `SECRETS_MASTER_KEY` nor either `SECRETS_DB_IAM_*`
-value since destroying never creates a secret.
+race the same resources, and does not need `SECRETS_MASTER_KEY` since destroying never creates
+a secret. Deleting the minted API key needs no credential of its own: deleting the secret deletes
+the key.
 
 All three declare an `environment: production`; **add required reviewers to that environment in
 Settings → Environments** if you want every apply or destroy to need a second pair of eyes. That
 is the one gate the workflow files cannot enforce for themselves.
 
 Repo secrets needed: `SCW_ACCESS_KEY`, `SCW_SECRET_KEY`, `SCW_DEFAULT_PROJECT_ID` and
-`SCW_DEFAULT_ORGANIZATION_ID` for all three workflows, plus `SECRETS_MASTER_KEY`,
-`SECRETS_DB_IAM_ACCESS_KEY` and `SECRETS_DB_IAM_SECRET_KEY` for `apply.yml` only — the values
-behind the three `fromEnv` secrets in `Fleet.lean`, needed only when those are first created. The composed database URL is never
+`SCW_DEFAULT_ORGANIZATION_ID` for all three workflows, plus `SECRETS_MASTER_KEY` for
+`apply.yml` only — the value behind the single `fromEnv` secret in `Fleet.lean`, needed only when
+that secret is first created. The composed database URL is never
 supplied here; the engine builds it at apply time.
 
 `SCW_DEFAULT_ORGANIZATION_ID` is what `checkAccounts` uses to establish which Scaleway

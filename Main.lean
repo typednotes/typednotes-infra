@@ -31,7 +31,13 @@ def accounts : Infra.Cli.Accounts where
     placement and its `forget`s — as the single value the `fleet` command
     builds. As of infra 0.9.0 the front end takes that rather than three
     arguments prised out of it, so there is no longer a way for this file to
-    hand over the plan and leave the placement or the releases behind. -/
+    hand over the plan and leave the placement or the releases behind.
+
+    `boundary` is the one part of the declaration the `fleet` command has no
+    syntax for, so it is passed here; `Fleet.lean` defines it next to the
+    resources it is about. Without it the Serverless SQL database would be
+    `foreign` — never adopted and never destroyed — because it is the one
+    kind in this fleet with nowhere to write an ownership marker. -/
 def main (args : List String) : IO UInt32 :=
   Infra.Cli.run "typednotes-infra" typednotes
-    (accounts := accounts) (args := args)
+    (accounts := accounts) (boundary := typednotesBoundary) (args := args)
