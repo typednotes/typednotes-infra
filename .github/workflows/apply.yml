@@ -117,6 +117,12 @@ jobs:
           SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
           SCW_DEFAULT_ORGANIZATION_ID: ${{ secrets.SCW_DEFAULT_ORGANIZATION_ID }}
         run: |
+          # `{ … } | tee` exits with tee's status, and Actions' `bash -e` does
+          # not set pipefail — so without this a failing `plan` reports green
+          # and `apply` runs anyway. That is exactly what happened on run
+          # 35595747955: the plan hit a 403 on IAM, the step passed, and the
+          # failure only surfaced one step later in `apply`.
+          set -o pipefail
           {
             echo '### Plan being applied'
             echo '```'
@@ -148,6 +154,7 @@ jobs:
           SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
           SCW_DEFAULT_ORGANIZATION_ID: ${{ secrets.SCW_DEFAULT_ORGANIZATION_ID }}
         run: |
+          set -o pipefail
           {
             echo '### State after apply'
             echo '```'
