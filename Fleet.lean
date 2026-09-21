@@ -76,16 +76,26 @@ import Infra
 open Infra.Core
 open Infra.Specs
 
-/-- The **data plane** permission set: connecting to a Serverless SQL Database
-    and running SQL in it.
+/-- What the server needs on its own database: read, write, **and DDL**.
 
-    Not `ServerlessSQLDatabaseReadWrite`, which is the management plane —
-    creating and configuring databases. They are different grants, and an
-    identity holding only the second can create this database and then fail to
-    connect to it. An organization-wide `AllProductsFullAccess` does not cover
-    the data plane either, which is why an org-admin key is refused here with
-    `password authentication failed`. -/
-def dataPlane : String := "ServerlessSQLDatabaseDataReadWrite"
+    Scaleway maps these sets onto fixed PostgreSQL roles, and the two names
+    are a trap laid the wrong way round. `ServerlessSQLDatabaseDataReadWrite`
+    — the one that reads like "the data plane", and the one this fleet used
+    first — maps to `role_readwrite`, which holds `USAGE` on schema `public`
+    but not `CREATE`. `ServerlessSQLDatabaseReadWrite` is the one Scaleway's
+    own description calls "Read, write access *and edit table structure*".
+
+    `secrets-server` runs `sqlx::migrate!` on its first connection, so it has
+    to create tables. Under the narrower set it authenticates perfectly,
+    connects, and then dies with `permission denied for schema public` —
+    which reads like a broken database rather than a missing grant, and
+    arrives only after everything else in the fleet is already standing.
+
+    Neither of these is the management plane, and `AllProductsFullAccess`
+    covers neither: data access is granted *only* through these sets, which
+    is why an organization-admin key is refused here with `password
+    authentication failed`. -/
+def dbAccess : String := "ServerlessSQLDatabaseReadWrite"
 
 fleet typednotes in paris where
   provider scaleway where
@@ -96,7 +106,7 @@ fleet typednotes in paris where
     -- is an IAM *application*, and `policies` is a list of permission-set
     -- names granted over the credentials' project.
     resource iam "secrets-db-app"
-      { policies := [dataPlane] }
+      { policies := [dbAccess] }
 
     -- Serverless, not classic: capacity bounds and no `instanceClass`, which
     -- is what routes this to the Serverless SQL backend. See the header for

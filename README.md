@@ -104,10 +104,12 @@ Before the first apply, two things exist outside this repo:
    There is deliberately **no database credential to supply**. Serverless SQL Database has no
    master user; it authenticates through IAM, and `apiKeyFor` mints the key at apply time for
    the `secrets-db-app` identity the fleet declares. The application holds the project-scoped
-   `ServerlessSQLDatabaseDataReadWrite` permission set — the *data* plane, not
-   `ServerlessSQLDatabaseReadWrite`, which only manages databases. `AllProductsFullAccess` does
-   not cover the data plane either, which is why an org-admin key is refused with `password
-   authentication failed`.
+   `ServerlessSQLDatabaseReadWrite` permission set — "read, write access and edit table
+   structure". Not `ServerlessSQLDatabaseDataReadWrite`, whose name suggests it is the right
+   one: that maps to `role_readwrite`, which cannot `CREATE` in schema `public`, so the server
+   authenticates, connects, and then fails its migrations with `permission denied for schema
+   public`. `AllProductsFullAccess` covers neither, which is why an org-admin key is refused
+   with `password authentication failed`.
 
 Then review the plan and apply:
 
