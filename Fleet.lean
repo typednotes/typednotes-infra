@@ -140,6 +140,34 @@ def pgUrl {K : ProviderId → Kind → Type} (key : K .scaleway .secrets)
 {(secretValueOf key).map Network.HTTP.Types.urlEncode}\
 @{endpointOf db}/{Expr.lit (K := K) dbName}?sslmode=require"
 
+/-- A Serverless SQL database's id, from its endpoint: the first label of the
+    host (`8766c6e0-….pg.sdb.fr-par.scw.cloud:5432` → `8766c6e0-…`) —
+    checked against `scw sdb-sql database list` on 2026-09-23. -/
+def databaseIdOf (endpoint : String) : String :=
+  let host := (endpoint.splitOn ":").headD endpoint
+  (host.splitOn ".").headD host
+
+#guard databaseIdOf "8766c6e0-fc9d-4a6b-901b-b7cc6e3403d8.pg.sdb.fr-par.scw.cloud:5432"
+  = "8766c6e0-fc9d-4a6b-901b-b7cc6e3403d8"
+
+/-- `pgUrl`, for a client that does not send the host name during the TLS
+    handshake (SNI). Serverless SQL routes each connection to its database
+    by that name, and refuses one without it:
+
+        pq: Database hostname wasn't sent to server. Either add
+        "?options=databaseid%3D{databaseid}" at the end of your connection
+        string, or use another client supporting TLS ServerNameIndication.
+
+    That is what pgweb's Go driver (`lib/pq`) does, and it is how the first
+    deploy of `db-inspector` failed to start — while libpq (infra, ledger,
+    liaison) and sqlx (the app, the vault) send SNI and need none of this.
+    So this appends the option Scaleway asks for, with the id taken from the
+    endpoint. Verified against the live `typednotes-db` with pgweb 0.17.0
+    before being declared here. -/
+def pgUrlWithoutSni {K : ProviderId → Kind → Type} (key : K .scaleway .secrets)
+    (db : K .scaleway .postgres) (dbName : String) : Expr K String :=
+  expr!"{pgUrl key db dbName}&options=databaseid%3D{(endpointOf db).map databaseIdOf}"
+
 /-- One release per service: the image tag, and — prefixed with `v` — the
     git tag its migrations are read at. Bump one of these to release that
     service (after its tag and image are published). -/
@@ -241,10 +269,17 @@ fleet typednotes in paris where
       { valueFrom := composed (pgUrl runtimeKey secretsDb "secrets-db") }
 
     resource secrets "typednotes-db-migrator-url" { valueFrom := composed (pgUrl migratorKey appDb "typednotes-db") }
-    resource secrets "typednotes-db-observer-url" as appDbObserverUrl
+    resource secrets "typednotes-db-observer-url"
       { valueFrom := composed (pgUrl observerKey appDb "typednotes-db") }
     resource secrets "typednotes-db-runtime-url" as appDbUrl
       { valueFrom := composed (pgUrl runtimeKey appDb "typednotes-db") }
+
+    -- The observer's URL again, for pgweb, whose driver sends no SNI: see
+    -- `pgUrlWithoutSni`. A separate secret rather than a changed
+    -- `typednotes-db-observer-url` — composed secrets are create-only, and
+    -- that one is also what infra observes migrations through.
+    resource secrets "typednotes-db-inspector-url" as inspectorDbUrl
+      { valueFrom := composed (pgUrlWithoutSni observerKey appDb "typednotes-db") }
 
     -- ── Migration histories ─────────────────────────────────────────────
     -- `users`, `identities`, `orgs`, `memberships` (`core.md` §4).
@@ -356,7 +391,7 @@ fleet typednotes in paris where
       , port       := 8081
       , migrations := [coreHistory, ledgerHistory, liaisonHistory]
       , env        := [ ("PGWEB_LOCK_SESSION", "1") ]
-      , secretEnv  := [ ("PGWEB_DATABASE_URL", appDbObserverUrl)
+      , secretEnv  := [ ("PGWEB_DATABASE_URL", inspectorDbUrl)
                       , ("PGWEB_AUTH_USER", inspectorUser)
                       , ("PGWEB_AUTH_PASS", inspectorPassword) ] }
 
@@ -414,6 +449,32 @@ def typednotesBoundary : Boundary :=
 -- Four histories, five containers.
 #guard typednotes.keys.count .scaleway .postgresMigrations = 4
 #guard typednotes.keys.count .scaleway .scalewayContainer = 5
+
+/- The inspector's URL, composed against stand-in observed values (the same
+   evaluation the apply performs, with real ones): the observer's
+   credentials, the database's endpoint, and the `databaseid` option pgweb's
+   driver needs in place of SNI. The key's two halves are redacted, exactly as
+   a dry run renders them. -/
+private def fakeEnv : Env typednotes.keys.Key :=
+  Env.withRedactedSecrets
+    { observed := fun p k _ =>
+        match p, k with
+        | .scaleway, .postgres => some
+            { handle := ⟨"8766c6e0-fc9d-4a6b-901b-b7cc6e3403d8"⟩
+              endpoint := "8766c6e0-fc9d-4a6b-901b-b7cc6e3403d8.pg.sdb.fr-par.scw.cloud:5432" }
+        | .scaleway, .secrets => some
+            { handle := ⟨"s"⟩, version := "1", accessKey := "SCWXXXX", principal := "app-id" }
+        | _, _ => none }
+
+#guard match typednotes.keys.keyOfName? .scaleway .secrets "typednotes-db-inspector-url" with
+  | none => false
+  | some key =>
+    match typednotes.plan.assign .scaleway .secrets key with
+    | .present s => match Expr.eval? fakeEnv s.valueFrom with
+      | some (.composed url) => url ==
+          "postgres://app-id:%3Credacted%3E@8766c6e0-fc9d-4a6b-901b-b7cc6e3403d8.pg.sdb.fr-par.scw.cloud:5432/typednotes-db?sslmode=require&options=databaseid%3D8766c6e0-fc9d-4a6b-901b-b7cc6e3403d8"
+      | _ => false
+    | _ => false
 
 -- Each service's image and SQL come from the same release (both are built
 -- from one value; this pins the spelling of the result).
