@@ -10,11 +10,15 @@ open System Lake DSL
   the comment there. That gap is one level deeper here: `typednotes-infra`'s executable links
   against `Infra`, which links against `linen`, and Lake propagates neither package's
   `moreLinkArgs` to this one. The fix is the same one level up — duplicate the flag computation
-  rather than depend on inheriting it. Kept byte-for-byte identical to `infra`'s own copy so the
-  two stay obviously in sync; if `infra` grows a third FFI dependency, this needs the same
-  addition.
+  rather than depend on inheriting it. Kept byte-for-byte identical to `infra`'s own copy
+  (between the `⟪native-link-flags⟫` markers) so the two stay obviously in sync. Since infra
+  0.13.0 that includes `libpq`: the `postgresMigrations` backend speaks the Postgres wire
+  protocol through `linen`'s FFI, so `libpq` (and `pkg-config`) must be installed wherever
+  this builds — CI installs `libpq-dev`.
 -/
 
+-- ⟪native-link-flags:begin⟫ — copied verbatim from `infra`'s own lakefile (v0.14.0).
+-- Diff the marked blocks when bumping `infra`; they must stay identical.
 /-- Ask `pkg-config` for a package's flags, degrading to `#[]` when it or the
     package is missing — matching how Linen treats optional native
     dependencies. -/
@@ -27,12 +31,31 @@ def pkgConfigFlags (args : Array String) : IO (Array String) := do
   catch _ => return #[]
 
 /-- Link flags naming each library file outright, rather than adding its
-    directory to the search path — see `infra`'s `lakefile.lean` for why a
-    bare `-L` is unsafe on Linux (shadows the system glibc). -/
+    directory to the search path.
+
+    On Linux, `pkg-config --variable=libdir` is typically
+    `/usr/lib/x86_64-linux-gnu`, which holds the *system* `libc.so` alongside
+    everything else. Passing that as `-L` makes `ld.lld` prefer the system
+    glibc over the one Lean bundles, and Lean's own `Scrt1.o` references
+    `__libc_csu_init` — removed in glibc 2.34. The result is a link that fails
+    with an undefined symbol in the C runtime, nowhere near anything this
+    package wrote.
+
+    Linen has the same `-L` and never hits this, because only `lean_lib Linen`
+    is a default target there: `lake build` never links an executable. `infra`
+    does.
+
+    Naming the library file directly links exactly the intended file and
+    shadows nothing — `.dylib` on macOS, `.so` on Linux (`ledger`'s lakefile
+    carries the same two-extension probe, for the same reason: a Homebrew
+    libpq is `libpq.dylib`, and a `.so`-only probe falls back to a bare
+    `-lpq` whose directory nothing added). Falls back to `-lfoo` if the file
+    is absent, so a distro with a different layout still gets a chance. -/
 def pkgAbsoluteLibs (pkg : String) : IO (Array String) := do
   let libs ← pkgConfigFlags #["--libs", pkg]
   let libdirs ← pkgConfigFlags #["--variable=libdir", pkg]
   let libdir : Option String := (libdirs.filter (· != ""))[0]?
+  let ext := if System.Platform.isOSX then "dylib" else "so"
   let mut out : Array String := #[]
   for tok in libs do
     if tok.startsWith "-L" then
@@ -41,7 +64,7 @@ def pkgAbsoluteLibs (pkg : String) : IO (Array String) := do
       let name := (tok.drop 2).toString
       match libdir with
       | some d =>
-        let candidate : FilePath := (d : FilePath) / s!"lib{name}.so"
+        let candidate : FilePath := (d : FilePath) / s!"lib{name}.{ext}"
         if ← candidate.pathExists then
           out := out.push candidate.toString
         else
@@ -51,7 +74,9 @@ def pkgAbsoluteLibs (pkg : String) : IO (Array String) := do
       out := out.push tok
   return out
 
-/-- The active macOS SDK's framework and library search paths. `#[]` off macOS. -/
+/-- The active macOS SDK's framework and library search paths. Lean ships its
+    own `lld`, which has no default framework path, so these are required for
+    `-framework` to resolve. `#[]` off macOS. -/
 def macSdkArgs : IO (Array String) := do
   try
     let out ← IO.Process.output { cmd := "xcrun", args := #["--show-sdk-path"] }
@@ -74,12 +99,43 @@ run_cmd do
       pure #["-ladvapi32", "-lcredui"]
     else
       pkgAbsoluteLibs "libsecret-1"
-  -- OpenSSL is deliberately absent here too — see `infra`'s `lakefile.lean`
-  -- for why naming the system OpenSSL is not merely redundant but fatal.
-  mkDef `nativeLinkArgs keychain
+  -- `Database.SQL`'s libpq. Absolute-path form on Linux for the same reason
+  -- the comment above `pkgAbsoluteLibs` gives: an `-L` to the system libdir
+  -- lets the distro's glibc shadow Lean's bundled one.
+  let libpq : Array String ← pkgAbsoluteLibs "libpq"
+  -- OpenSSL is deliberately absent, though `jose.o` and `tls.o` both reference
+  -- it. Lean already ends every executable link with its own
+  -- `LEANC_INTERNAL_LINKER_FLAGS`:
+  --
+  --     -L <toolchain>/lib … -lgmp -luv -lssl -lcrypto
+  --
+  -- which resolves against the *static* `libssl.a`/`libcrypto.a` the release
+  -- toolchain bundles (`script/prepare-llvm-linux.sh`: `cp $OPENSSL/lib/libssl.a
+  -- $OPENSSL/lib/libcrypto.a stage1/lib/`). Those archives are already the
+  -- last thing on the line, which is exactly where an archive has to sit to
+  -- satisfy `liblinenffi.a` above it.
+  --
+  -- Naming the system OpenSSL as well is not merely redundant on Linux, it is
+  -- fatal. A current distro's `libssl.so`/`libcrypto.so` need
+  -- `stat@GLIBC_2.33`, `dlopen@GLIBC_2.34` and `__isoc23_strtol@GLIBC_2.38`,
+  -- while the glibc Lean bundles under `lib/glibc` predates all three — it
+  -- still has the `__libc_csu_init` that glibc 2.34 removed. Under lld's
+  -- default `--no-allow-shlib-undefined` that is an immediate link failure on
+  -- eighteen symbols no code here can reach.
+  --
+  -- Dropping it retires the macOS hazard too: the reason to point at
+  -- Homebrew's OpenSSL was that dyld could otherwise bind to the system's
+  -- incompatible `libboringssl` and crash on the first TLS call. A static
+  -- archive cannot be re-bound at runtime, so the failure mode is gone rather
+  -- than merely avoided.
+  --
+  -- The Linux CI still installs `libssl-dev`, for the *headers* Linen's
+  -- `jose.c`/`tls.c` compile against. Only the link flags are unnecessary.
+  mkDef `nativeLinkArgs (keychain ++ libpq)
+-- ⟪native-link-flags:end⟫
 
 package «typednotes-infra» where
-  version := v!"0.3.0"
+  version := v!"0.4.0"
   moreLinkArgs := nativeLinkArgs
 
 -- A tag rather than `main`. `Main.lean` hands the whole declaration to
@@ -88,7 +144,8 @@ package «typednotes-infra» where
 -- breaking change in the front end arrives here unannounced, in whatever
 -- state it happens to be in. Moving forward is a deliberate edit: bump this,
 -- run `lake update infra`, and read the library's CHANGELOG on the way.
-require infra from git "https://github.com/typednotes/infra" @ "v0.12.1"
+require infra from git "https://github.com/typednotes/infra" @ "v0.14.0"
+
 
 @[default_target]
 lean_lib Fleet

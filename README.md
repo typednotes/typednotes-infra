@@ -15,60 +15,70 @@ unconditionally.
 
 ## What's declared
 
-`Fleet.lean` is the whole declaration. It manages eight Scaleway resources:
+`Fleet.lean` is the whole declaration: the `typednotes` system of
+[`typednotes/typednotes`](https://github.com/typednotes/typednotes)'s `docs/architecture.md`,
+as far as it is built — 30 Scaleway resources in one apply.
 
-| | |
-|---|---|
-| `secrets-server` | a Serverless Container running [`secrets`](https://github.com/typednotes/secrets) |
-| `secrets-db` | a serverless Postgres database backing it |
-| `secrets-master-key` | the container's own master key |
-| `secrets-bootstrap-password` | password for the initial `admin` user, read only on first start |
-| `secrets-db-app` | the IAM application the database authenticates as |
-| `secrets-db-key` | its API key, minted at apply and never readable again |
-| `secrets-db-url` | the connection string, composed at apply time |
-| `typednotes` | the Serverless Containers namespace the container is placed into |
+| Container | What | Database | Image |
+|---|---|---|---|
+| `typednotes-app` | the Dioxus fullstack app (`core`: users, orgs) | `typednotes-db` | `ghcr.io/typednotes/typednotes` |
+| `ledger` | usage ledger — expired-hold sweeper, `/health` | `typednotes-db` | `ghcr.io/typednotes/ledger` |
+| `liaison` | the broker — the egress chokepoint | `typednotes-db` | `ghcr.io/typednotes/liaison` |
+| `secrets-server` | the vault | `secrets-db` | `ghcr.io/typednotes/secrets-server` |
+| `db-inspector` | [pgweb](https://github.com/sosedoff/pgweb): browse and query `typednotes-db`, read-only, password-gated | `typednotes-db` | `docker.io/sosedoff/pgweb:0.17.0` |
 
-Scaleway only, so AWS is never authenticated and never called — both facts are
-`#guard`ed in `Fleet.lean` rather than assumed.
+Around them: one container namespace, two Serverless SQL databases, three IAM identities
+(migrator / observer / runtime) with one minted API key each, six composed connection strings,
+six operator-supplied secrets, and **four migration histories**.
 
-### One apply, not two
+### Schemas are declared resources
 
-`secrets-db-url`'s value needs the database's credential *and* the endpoint Scaleway assigns
-when the database is created. That used to mean two `apply` runs with an operator pasting a
-connection string in between. `Fleet.lean` declares the *function* instead, with `composed`
-over `.secretValue` and `.observed`; `infra` orders the key and the database before it and
-evaluates it once, at apply time. The value never enters this repo, the plan output, or the
-`.infra/` cache.
-
-The credential itself is not supplied either. Serverless SQL Database has no master user — it
-authenticates through IAM — so `secrets-db-key` is declared with `apiKeyFor`, which mints an API
-key for the `secrets-db-app` identity at the moment the secret is created. Scaleway returns an
-API key's secret half once and never again, so it can be neither an environment variable nor an
-observed value; minting it straight into a secret is the only place it can go. The halves that
-are *not* secret — the access key and the application id — come back as observed state, which is
-how `principalOf` supplies the PostgreSQL user name.
-
-So the whole fleet deploys in a single apply:
+No service migrates itself. Each service keeps its migrations as plain `.sql` files in its own
+repository; `Fleet.lean` lists those files per service and `infra` reads them from GitHub at the
+service's release tag when it plans (`github "typednotes/ledger" "v0.2.0" ["sql/0001_init.sql"]`),
+declaring each as a `postgresMigrations` history. Nothing is copied here, and no service carries
+anything but SQL for this.
 
 ```
-would CREATE scaleway/iam/secrets-db-app
-would CREATE scaleway/secrets/secrets-master-key
-would CREATE scaleway/secrets/secrets-bootstrap-password
-would CREATE scaleway/postgres/secrets-db
-would CREATE scaleway/scaleway-container-namespace/typednotes
-would CREATE scaleway/secrets/secrets-db-key
-would CREATE scaleway/secrets/secrets-db-url
-would CREATE scaleway/scaleway-container/secrets-server
+typednotes-core-history ◀── typednotes-ledger-history     (its SQL references orgs, users)
+typednotes-liaison-history
+secrets-history
 ```
 
-The namespace is declared rather than assumed. Serverless Containers will not
-place a container into a namespace that does not exist, and `namespace'` is a
-*reference*, so it is created first and cannot be misspelled — that used to
-fail at apply time with `no namespace named 'typednotes'`.
+- **The plan names the work**: a pending migration is an `UPDATE` of its history.
+- **Order comes from the SQL**, not a declaration (infra ≥ 0.14.0): ledger's tables
+  `references orgs(id)`, so ledger's history applies after the app's. A reference to a table no
+  history creates, or a table two histories create, is refused at `plan`.
+- **Every rollout waits for the schemas it needs**: each container's `migrations` lists them. liaison
+  writes ledger's tables — a dependency in its code, not its SQL — so its container waits for
+  ledger's history as well as its own. A failed migration stops the rollout.
+- **No serving identity can edit table structure**: DDL is the migrator's, used only by `apply`.
+- **An applied migration can't be changed underneath you**: infra compares the SQL at the URL with
+  what the database recorded when it applied it, and refuses a mismatch (e.g. a moved tag).
 
-A composed secret is **create-only**: no cloud reports a secret's value, so it can never be
-diffed, and a second apply asks for nothing. Rotating one is an explicit act, not a
-reconciliation.
+Each service has **one release value** in `Fleet.lean` (`ledgerRelease := "0.2.0"`, …) naming both
+its image tag and the git tag its SQL is read at, so code and schema can't drift apart.
+**Releasing a service** = publish its tag and image, bump its release value here, and add any new
+migration file to its list — a diff that shows exactly which SQL will run.
+
+Because the SQL is fetched at `plan`, the offline `check` verifies the declaration's shape (ids,
+`https://` URLs) but not the SQL's content or the order it implies — it says so when it runs.
+
+### The DB inspector
+
+Scaleway's console has no query editor for Serverless SQL (only connection strings for `psql`), so
+the fleet runs pgweb at the `db-inspector` container's URL. Three independent protections:
+
+1. **HTTP basic auth** with a username and password *you* choose: `DB_INSPECTOR_USERNAME` /
+   `DB_INSPECTOR_PASSWORD`, stored in Scaleway Secret Manager, never in this repo.
+2. **A read-only database identity** (`ServerlessSQLDatabaseReadOnly`): even past the password,
+   nothing can be changed — an `INSERT` fails with `permission denied`.
+3. **`PGWEB_LOCK_SESSION`**: pgweb's "connect to another server" form is disabled, so it cannot be
+   used as a proxy to other hosts.
+
+It shows `typednotes-db` (app, ledger, liaison). The vault's database is deliberately not exposed —
+it holds only ciphertext. All three protections were checked against the real `pgweb:0.17.0` image
+and a local Postgres before this was committed.
 
 ## Building and running
 
@@ -89,7 +99,10 @@ it the front end took the plan, the placement and the releases as three separate
 nothing stopped a call from handing over one and forgetting another.
 
 `lakefile.lean` therefore requires `infra` at a tag rather than at `main` — currently
-`v0.12.1`. Moving to a later release is a deliberate edit — bump the tag, run `lake update
+`v0.14.0` (migrations read from URLs and ordered by their SQL, container `migrations` lists, and
+`namePrefixes`; 0.13.0 added the
+`postgresMigrations` kind and made `libpq` a link-time dependency, so `libpq`/`pkg-config` must be
+installed wherever this builds). Moving to a later release is a deliberate edit — bump the tag, run `lake update
 infra`, read that release's entry in `infra`'s `CHANGELOG.md` — rather than something that
 happens to this repo the next time CI runs.
 
@@ -99,50 +112,67 @@ needs `default_project_id`.
 
 ## Deploying
 
-Before the first apply, two things exist outside this repo:
+**Before the first apply**, three things exist outside this repo:
 
-1. **The container image**, at `ghcr.io/typednotes/secrets-server:0.1.1` — public, and pulled
-   straight from GHCR. The `secrets` repo's `docker-publish.yml` publishes it on a `v*.*.*` tag
-   (a push to `main` only moves `edge`), and also has a `skopeo` step that mirrors `latest` into
-   `rg.fr-par.scw.cloud/typednotes/secrets-server:latest`, which needs an `SCW_SECRET_KEY`
-   secret on *that* repo. Scaleway's docs discourage external registries for production
-   ("uncontrolled rate limiting") and do not support private ones at all, so the mirror is the
-   eventual destination; see `infra`'s `docs/providers.md`.
+1. **The release tags, pushed** — `infra` `v0.14.0` (then `lake update infra` here and commit
+   `lake-manifest.json`), and the services' tags `typednotes` `v0.1.0`, `ledger` `v0.2.0`,
+   `liaison` `v0.2.0`, `secrets` `v1.1.0`, whose `.sql` files `plan` reads and whose
+   `docker-publish.yml` workflows build **the images**. Until a service's tag is pushed, `plan`
+   stops with `HTTP 404 — is the tag or commit pushed, and the path right?`.
+2. **The six values** behind `Fleet.lean`'s `fromEnv` secrets, read only when each secret is
+   first created. These name variables, never values; nothing secret is committed.
 
-   **The tag is pinned, deliberately.** `image` is compared as a string, so `:latest` is
-   invisible to the differ — republishing moves the digest while the declaration reads
-   identically, the plan proposes nothing, and the container goes on running what it first
-   pulled. Deploying 0.1.1 over 0.1.0 needed the container deleted by hand for exactly that
-   reason. With a version, a release is an ordinary diff and the plan says `UPDATE`.
-2. **The two env vars the secrets read**: `SECRETS_MASTER_KEY` and
-   `SECRETS_BOOTSTRAP_PASSWORD`. These name variables, never values — nothing secret is
-   committed here. Generate the master key and keep it somewhere durable: losing it means
-   losing what the server encrypted.
+   | Variable | What |
+   |---|---|
+   | `SECRETS_MASTER_KEY` | the vault's master key (`openssl rand -hex 32`). **Keep it durably** — losing it loses the vault's contents |
+   | `SECRETS_BOOTSTRAP_PASSWORD` | the vault's initial `admin` password (read only while that user is absent) |
+   | `LIAISON_ROOT_KEY` | the warrant root key (`openssl rand -hex 32`) |
+   | `LIAISON_SECRETS_TOKEN` | liaison's token for the vault — a placeholder on the first deploy; see below |
+   | `DB_INSPECTOR_USERNAME` | the DB inspector's basic-auth username — your choice |
+   | `DB_INSPECTOR_PASSWORD` | the DB inspector's basic-auth password — make it long |
 
-   `SECRETS_BOOTSTRAP_PASSWORD` is the password for the server's initial `admin` user, which
-   `secrets-server` creates with a full-access `root` policy the first time it starts against
-   a database with no such user. Set neither variable and the service comes up perfectly
-   healthy with no users at all and no way to obtain a token — which is how this fleet was
-   first deployed. Changing the value later does **not** rotate the password: the server only
-   reads it when the user is absent.
+3. **An empty `secrets-db`.** The vault used to migrate itself with sqlx; the schema is now
+   `secrets-history`'s, which will try to create `kv_store`. The existing database already has
+   it, so **delete `secrets-db` in the Scaleway console first** (its contents were disposable —
+   there were no users besides `admin`); the apply recreates it. The old `secrets-db-app`,
+   `secrets-db-key` and `secrets-db-url` are no longer declared and are deleted as orphans at the
+   end of the same apply.
 
-   There is deliberately **no database credential to supply**. Serverless SQL Database has no
-   master user; it authenticates through IAM, and `apiKeyFor` mints the key at apply time for
-   the `secrets-db-app` identity the fleet declares. The application holds the project-scoped
-   `ServerlessSQLDatabaseReadWrite` permission set — "read, write access and edit table
-   structure". Not `ServerlessSQLDatabaseDataReadWrite`, whose name suggests it is the right
-   one: that maps to `role_readwrite`, which cannot `CREATE` in schema `public`, so the server
-   authenticates, connects, and then fails its migrations with `permission denied for schema
-   public`. `AllProductsFullAccess` covers neither, which is why an org-admin key is refused
-   with `password authentication failed`.
-
-Then review the plan and apply:
+Then:
 
 ```
-export SECRETS_MASTER_KEY=...  SECRETS_BOOTSTRAP_PASSWORD=...
+export SECRETS_MASTER_KEY=... SECRETS_BOOTSTRAP_PASSWORD=... LIAISON_ROOT_KEY=... \
+       LIAISON_SECRETS_TOKEN=placeholder DB_INSPECTOR_USERNAME=... DB_INSPECTOR_PASSWORD=...
 lake exe typednotes-infra plan          # read this
 lake exe typednotes-infra apply
 ```
+
+### Verify on the first live apply
+
+Two Scaleway facts this fleet depends on are documented but **not yet exercised by any live run**
+(infra's `docs/diff-semantics.md` carries them):
+
+- **`CREATE SCHEMA` under `ServerlessSQLDatabaseReadWrite`.** Each history keeps its bookkeeping in
+  `<schema>.infra_migrations`; Scaleway's permission page lists `CREATE TABLE`/`INDEX` for that set,
+  not `CREATE SCHEMA`. If it is refused, the first history fails before any migration runs or any
+  container rolls out — loud and early.
+- **Cross-identity access.** Tables are created by the migrator and used by the runtime and
+  observer identities. Scaleway says `GRANT` cannot be performed and access comes from the
+  permission sets, which apply to every table; the app's status line ("core schema present"), the
+  ledger's `/health`, and a query in the DB inspector are the three quick checks.
+
+Also check `CREATE EXTENSION citext` in the core history — `citext` is on Scaleway's supported list,
+and the migrator creates it.
+
+### Known gap: liaison's vault token expires
+
+`liaison` (v0) reads a static `SECRETS_TOKEN`. The vault issues tokens only by login, with a
+one-hour TTL (`secrets-auth-userpass`), and liaison neither logs in nor renews — so any egress call
+that needs a third-party credential fails closed an hour after the token was minted. Everything
+else about liaison (warrant verification, holds, the audit log) is unaffected. Until liaison learns
+to log in itself, deploy with a placeholder and treat credentialed egress as not yet available;
+a real token can be minted with
+`curl -X POST https://<secrets-server-url>/v1/auth/userpass/login -H 'content-type: application/json' -d '{"username":"admin","password":"…"}'`.
 
 ## CI
 
@@ -171,10 +201,11 @@ Settings → Environments** if you want every apply or destroy to need a second 
 is the one gate the workflow files cannot enforce for themselves.
 
 Repo secrets needed: `SCW_ACCESS_KEY`, `SCW_SECRET_KEY`, `SCW_DEFAULT_PROJECT_ID` and
-`SCW_DEFAULT_ORGANIZATION_ID` for all three workflows, plus `SECRETS_MASTER_KEY` and
-`SECRETS_BOOTSTRAP_PASSWORD` for `apply.yml` only — the values behind the two `fromEnv` secrets
-in `Fleet.lean`, needed only when those secrets are first created. The composed database URL is never
-supplied here; the engine builds it at apply time.
+`SCW_DEFAULT_ORGANIZATION_ID` for all three workflows, plus the six values behind `Fleet.lean`'s
+`fromEnv` secrets for `apply.yml` only (`SECRETS_MASTER_KEY`, `SECRETS_BOOTSTRAP_PASSWORD`,
+`LIAISON_ROOT_KEY`, `LIAISON_SECRETS_TOKEN`, `DB_INSPECTOR_USERNAME`, `DB_INSPECTOR_PASSWORD`),
+needed only when those secrets are first created. The composed database URLs are never supplied
+here; the engine builds them at apply time.
 
 `SCW_DEFAULT_ORGANIZATION_ID` is what `checkAccounts` uses to establish which Scaleway
 organization the credentials belong to (see `accounts` in `Main.lean`) — without it the API
@@ -188,8 +219,8 @@ secret that was not a secret, and having it there meant CI could quietly run aga
 other than the `fr-par` in the container image's own URL — the account guard checks the
 organization, not the place. The secret can be deleted; leaving it set does nothing.
 
-`apply.yml` checks all five are non-empty **before** it touches anything, and names the missing
-ones. That matters for the two `SECRETS_*` values in particular: they are not credentials, so
+`apply.yml` checks all ten are non-empty **before** it touches anything, and names the missing
+ones. That matters for the six `fromEnv` values in particular: they are not credentials, so
 nothing else would notice they were absent until the backend tried to create that secret —
 which is after the database already exists, leaving a half-applied fleet.
 
