@@ -85,11 +85,17 @@ jobs:
           SCW_DEFAULT_ORGANIZATION_ID: ${{ secrets.SCW_DEFAULT_ORGANIZATION_ID }}
           SECRETS_MASTER_KEY: ${{ secrets.SECRETS_MASTER_KEY }}
           SECRETS_BOOTSTRAP_PASSWORD: ${{ secrets.SECRETS_BOOTSTRAP_PASSWORD }}
+          LIAISON_ROOT_KEY: ${{ secrets.LIAISON_ROOT_KEY }}
+          LIAISON_SECRETS_TOKEN: ${{ secrets.LIAISON_SECRETS_TOKEN }}
+          DB_INSPECTOR_USERNAME: ${{ secrets.DB_INSPECTOR_USERNAME }}
+          DB_INSPECTOR_PASSWORD: ${{ secrets.DB_INSPECTOR_PASSWORD }}
         run: |
           missing=()
           for v in SCW_ACCESS_KEY SCW_SECRET_KEY \
                    SCW_DEFAULT_PROJECT_ID SCW_DEFAULT_ORGANIZATION_ID \
-                   SECRETS_MASTER_KEY SECRETS_BOOTSTRAP_PASSWORD; do
+                   SECRETS_MASTER_KEY SECRETS_BOOTSTRAP_PASSWORD \
+                   LIAISON_ROOT_KEY LIAISON_SECRETS_TOKEN \
+                   DB_INSPECTOR_USERNAME DB_INSPECTOR_PASSWORD; do
             [ -n "${!v}" ] || missing+=("$v")
           done
           if [ ${#missing[@]} -ne 0 ]; then
@@ -108,11 +114,17 @@ jobs:
       # password for the server's initial `admin` user: without it the
       # container starts with no users and nothing can log in.
       #
+      # `LIAISON_ROOT_KEY`, `LIAISON_SECRETS_TOKEN`, `DB_INSPECTOR_USERNAME`
+      # and `DB_INSPECTOR_PASSWORD` are the other four `fromEnv` secrets, read
+      # the same way — only when each is first created. See the README for
+      # why the liaison token is a placeholder on a first deploy.
+      #
       # There is deliberately no database credential here. Serverless SQL
-      # Database authenticates through IAM, and `apiKeyFor` mints the key at
-      # apply time for the `secrets-db-app` identity this fleet declares — so
-      # the credential never exists outside the cloud, and the composed
-      # database URL is built by the engine and never supplied here.
+      # Database authenticates through IAM, and `apiKeyFor` mints a key at
+      # apply time for each of the three identities `Fleet.lean` declares
+      # (migrator, observer, runtime) — so no credential exists outside the
+      # cloud, and the six composed database URLs are built by the engine and
+      # never supplied here.
       - name: Plan
         env:
           SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
@@ -145,6 +157,10 @@ jobs:
           SCW_DEFAULT_ORGANIZATION_ID: ${{ secrets.SCW_DEFAULT_ORGANIZATION_ID }}
           SECRETS_MASTER_KEY: ${{ secrets.SECRETS_MASTER_KEY }}
           SECRETS_BOOTSTRAP_PASSWORD: ${{ secrets.SECRETS_BOOTSTRAP_PASSWORD }}
+          LIAISON_ROOT_KEY: ${{ secrets.LIAISON_ROOT_KEY }}
+          LIAISON_SECRETS_TOKEN: ${{ secrets.LIAISON_SECRETS_TOKEN }}
+          DB_INSPECTOR_USERNAME: ${{ secrets.DB_INSPECTOR_USERNAME }}
+          DB_INSPECTOR_PASSWORD: ${{ secrets.DB_INSPECTOR_PASSWORD }}
         run: lake script run apply --yes
 
       # What the account looks like afterwards. A clean apply leaves nothing

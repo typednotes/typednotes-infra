@@ -4,240 +4,460 @@ import Infra
   The declared fleet: everything this project manages.
 
   Declared with `infra`'s `fleet` command (see its `docs/architecture.md`,
-  "Declaring a fleet"). Everything below is a resource; there is no `Keys`
-  table, no `assign` match, and no `.lit`/`.known` wrappers — those are
-  generated or coerced. To manage something new, add a `resource` line.
+  "Declaring a fleet"). Everything below is a resource. To manage something
+  new, add a `resource` line.
 
   **Scoping.** A `(provider, kind)` pair not named below, or a name not listed
   under a pair that is, has no key for the plan to mention — so whatever
   exists there in the account is left alone, unconditionally. This fleet is
   Scaleway-only, so AWS is never authenticated and never called.
 
-  ## The `secrets-server` target
+  ## What runs
 
-  A Scaleway Serverless Container backed by a serverless Postgres database,
-  plus the IAM identity that database authenticates and the four secrets:
-  the container's own master key, the password for its initial `admin`
-  user, the identity's minted API key, and the database URL.
+  Five Serverless Containers in one namespace, over two Serverless SQL
+  databases — `docs/architecture.md` §2 of `typednotes/typednotes`, as far as
+  it is built:
 
-  **Serverless SQL Database has no master user.** There is no root password
-  to set: authentication is IAM, the PostgreSQL user name is an IAM
-  application's *id*, and the password is that application's API secret key.
-  `masterUsername`/`masterPasswordSecret` below are required by the portable
-  spec and discarded by this product, so they say so rather than naming a
-  plausible `secretsadmin` that is never created — which is exactly what made
-  an earlier version of this file look correct while provisioning no
-  credentials at all.
+  | container        | image                              | database        |
+  |------------------|------------------------------------|-----------------|
+  | `typednotes-app` | the Dioxus fullstack app (`core`)  | `typednotes-db` |
+  | `ledger`         | usage ledger: hold sweeper         | `typednotes-db` |
+  | `liaison`        | the broker (egress chokepoint)     | `typednotes-db` |
+  | `secrets-server` | the vault                          | `secrets-db`    |
+  | `db-inspector`   | pgweb, read-only, password-gated   | `typednotes-db` |
 
-  **Neither half of that key can be written here.** Scaleway returns an API
-  key's secret once, at creation, and reports it as null for ever after, so
-  it can be neither an environment variable (nobody has it yet) nor an
-  observed value (observed state is cached in `.infra/` and printed in
-  plans). `apiKeyFor` mints it at the moment the secret is created and writes
-  the secret half straight in — the one operation here that is already
-  write-only. The halves that are not secret, the access key and the
-  application id, come back in `SecretsObserved` where `expr!` can reach
-  them.
+  `ledger` and `liaison` share the app's database by design (`ledger.md`:
+  "deployed inside core"; `broker.md`: "shares a database with core") — their
+  schemas reference `orgs`/`users` and each other's tables. The vault has a
+  database of its own.
 
-  **The database URL is composed at apply time, not by hand.** Its value
-  needs the minted key *and* the endpoint Scaleway assigns when the database
-  is created. `composed` holds the function instead; `infra` orders the key
-  and the database before it and evaluates it once, at apply time, without
-  the value ever entering this file, the plan output, or the `.infra/` cache.
-  **One `push --apply` deploys the whole fleet, with no `scw` command and no
-  credential pasted in between.**
+  ## Schemas are declared, not migrated at startup
 
-  ## Where it is
+  Four `postgresMigrations` histories, one per service. Each lists its
+  migration *files*, read by `infra` from the service's own GitHub
+  repository at the service's release tag when it plans (`github …`) — so
+  the SQL under review is the service's own `.sql`, never a copy, and
+  adopting a new migration is a one-line diff here:
 
-  `in paris` places the fleet at `fr-par`, Scaleway's Paris region. It used to
-  come from `SCW_DEFAULT_REGION`, supplied to CI as a repo secret — invisible
-  in the repo, unpinned, and free to disagree with the `rg.fr-par.scw.cloud`
-  baked into the image URL below without anything noticing. The account guard
-  in `Main.lean` checks the organization, not the region, so nothing did.
-  Declaring it here removes the secret and the disagreement: `infra` builds
-  every Scaleway endpoint from this rather than from the environment.
+      typednotes-core-history ◀── typednotes-ledger-history   (references orgs, users)
+      typednotes-liaison-history
+      secrets-history
 
-  Every resource here is Scaleway's, so the cloud is written once in a
-  `provider` block rather than six times. That is grouping and nothing else —
-  `infra`'s `Infra/Demo.lean` declares one fleet both ways and guards that the
-  keys, names, plan and ordering come out identical.
+  The order between the histories on `typednotes-db` is read from their SQL
+  (infra ≥ 0.14.0): ledger's tables `references orgs(id)`, so ledger's
+  history applies after the app's. Nothing is declared twice; a reference
+  to a table no history creates is refused at plan time. Each container's
+  `migrations` lists every history its rollout waits for — liaison's code
+  writes ledger's tables, a dependency no SQL states, so its container
+  waits for ledger's history as well as its own. New code never meets an
+  old schema, and a failed migration stops the rollout. No service migrates
+  itself: `secrets-server` runs with `SECRETS_SERVER_STORAGE_MIGRATE=false`,
+  the others have no migrator in their serving path at all.
 
-  **The image is pinned to a version, not `latest`.** `image` is compared as
-  a string, so a moving tag is invisible to the differ: republishing
-  `latest` changes the digest while the declaration reads identically, the
-  plan proposes nothing, and the container keeps running whatever it pulled
-  when it was created. That is not hypothetical — deploying 0.1.1 over
-  0.1.0 needed the container deleted by hand before `apply` would recreate
-  it, because nothing in the declaration had changed. A version here makes a
-  release an ordinary diff: bump the tag, and the plan says `UPDATE`.
+  Because the SQL is fetched at `plan`, the offline `check` cannot verify
+  its content or the order it implies; `plan` does, before anything else.
 
-  **It is pulled straight from GHCR** — which is public — rather than
-  mirrored into Scaleway Container Registry. Scaleway's docs say pulling a
-  public external image works but discourage it for production
-  ("uncontrolled rate limiting"), and the `secrets` repo's
-  `docker-publish.yml` has a `skopeo copy` step that mirrors into
-  `rg.fr-par.scw.cloud/typednotes/secrets-server:latest` on a tagged
-  release. Switching to that means pointing `image` at the mirror *and*
-  giving it a version rather than `latest`, for the reason above.
+  Each history's `schema` is only where `infra` keeps its bookkeeping table
+  (`<schema>.infra_migrations`); the services' tables live in `public`, as
+  their SQL says. Distinct schemas are what keep the three histories on one
+  database from reading each other's rows.
+
+  ## Three database identities, not one per service
+
+  Serverless SQL Database has no master user: authentication is IAM, the
+  PostgreSQL user name is an IAM application's *id*, and the password is that
+  application's API secret key, minted at apply by `apiKeyFor` and never
+  readable again. Permission sets scope to a **Project**, not to a database
+  (Scaleway: "access management at resource level is not yet available"), so
+  an identity per service would be ceremony — each would reach every
+  database in the project anyway. What *does* separate is the permission set:
+
+  | identity                  | permission set                       | used by                        |
+  |---------------------------|--------------------------------------|--------------------------------|
+  | `typednotes-db-migrator`  | `ServerlessSQLDatabaseReadWrite`     | `infra` apply (DDL)            |
+  | `typednotes-db-observer`  | `ServerlessSQLDatabaseReadOnly`      | `infra` plan/refresh, pgweb    |
+  | `typednotes-db-runtime`   | `ServerlessSQLDatabaseDataReadWrite` | every serving container        |
+
+  So no serving container can change a table's structure, and the DB
+  inspector cannot change anything. Scaleway's "Known differences" page says
+  `GRANT` cannot be performed — access is IAM's, per permission set — which
+  is what lets the runtime and observer identities use tables the migrator
+  created. **Verify on the first apply** (see the README): that is a provider
+  fact no live run has exercised yet.
+
+  **Composed URLs are create-only.** No cloud reports a secret's value, so a
+  composed URL is built once, at creation, and never diffed. That is why the
+  runtime URL for the vault is `secrets-db-runtime-url` and not the old
+  `secrets-db-url`: reusing the name would have kept the old value, pointing
+  at the retired `secrets-db-app` identity. The old `secrets-db-app`,
+  `secrets-db-key` and `secrets-db-url` are no longer declared, so the next
+  apply deletes them as orphans — after the builds, so nothing is left
+  without a credential in between.
+
+  ## Where it is, and the images
+
+  `in paris` places the fleet at `fr-par`. Every image is pulled straight
+  from a public registry and **pinned to a version**: `image` is compared as
+  a string, so a moving tag is invisible to the differ. Each service has one
+  release value below, which names both its image tag and the git tag its
+  SQL is read at — so the image and the schema it expects cannot drift
+  apart, and releasing a service is changing one string.
 -/
 
 open Infra.Core
 open Infra.Specs
 
-/-- What the server needs on its own database: read, write, **and DDL**.
+/-- DDL rights, for applying migrations and nothing else. The set Scaleway
+    describes as "read, write access *and edit table structure*"
+    (SELECT/UPDATE/INSERT/DELETE, CREATE/ALTER/DROP TABLE and INDEX). Not
+    `ServerlessSQLDatabaseDataReadWrite`, whose name suggests it and which
+    cannot `CREATE`. -/
+def ddlAccess : String := "ServerlessSQLDatabaseReadWrite"
 
-    Scaleway maps these sets onto fixed PostgreSQL roles, and the two names
-    are a trap laid the wrong way round. `ServerlessSQLDatabaseDataReadWrite`
-    — the one that reads like "the data plane", and the one this fleet used
-    first — maps to `role_readwrite`, which holds `USAGE` on schema `public`
-    but not `CREATE`. `ServerlessSQLDatabaseReadWrite` is the one Scaleway's
-    own description calls "Read, write access *and edit table structure*".
+/-- `SELECT` and nothing else: the observation path of `infra`'s migrations
+    kind, and the DB inspector. -/
+def readAccess : String := "ServerlessSQLDatabaseReadOnly"
 
-    `secrets-server` runs `sqlx::migrate!` on its first connection, so it has
-    to create tables. Under the narrower set it authenticates perfectly,
-    connects, and then dies with `permission denied for schema public` —
-    which reads like a broken database rather than a missing grant, and
-    arrives only after everything else in the fleet is already standing.
+/-- SELECT/UPDATE/INSERT/DELETE — what a serving container needs, and no
+    structure-editing rights, because no service migrates itself. -/
+def dataAccess : String := "ServerlessSQLDatabaseDataReadWrite"
 
-    Neither of these is the management plane, and `AllProductsFullAccess`
-    covers neither: data access is granted *only* through these sets, which
-    is why an organization-admin key is refused here with `password
-    authentication failed`. -/
-def dbAccess : String := "ServerlessSQLDatabaseReadWrite"
+/-- A Serverless SQL connection string for `key`'s identity on database
+    `db` (whose name is `dbName`).
+
+    Three traps, each of which cost this fleet a debugging session once:
+    **the user name is the application id** (`principalOf`), not the access
+    key, which fails as `password authentication failed for user "SCW…"`;
+    **the path is the database's own name**, else `database "…" does not
+    exist` after apply reports success; and **`?sslmode=require` is
+    mandatory**, and `endpointOf` does not supply it. Both credential halves
+    go through `urlEncode`: a single `/` in one would end the URL's authority
+    early and surface as `invalid port number`. -/
+def pgUrl {K : ProviderId → Kind → Type} (key : K .scaleway .secrets)
+    (db : K .scaleway .postgres) (dbName : String) : Expr K String :=
+  expr!"postgres://\
+{(principalOf key).map Network.HTTP.Types.urlEncode}:\
+{(secretValueOf key).map Network.HTTP.Types.urlEncode}\
+@{endpointOf db}/{Expr.lit (K := K) dbName}?sslmode=require"
+
+/-- One release per service: the image tag, and — prefixed with `v` — the
+    git tag its migrations are read at. Bump one of these to release that
+    service (after its tag and image are published). -/
+def appRelease : String := "0.1.0"
+def ledgerRelease : String := "0.2.0"
+def liaisonRelease : String := "0.2.0"
+def secretsRelease : String := "1.1.0"
+
+def appImage : String := s!"ghcr.io/typednotes/typednotes:{appRelease}"
+def ledgerImage : String := s!"ghcr.io/typednotes/ledger:{ledgerRelease}"
+def liaisonImage : String := s!"ghcr.io/typednotes/liaison:{liaisonRelease}"
+def secretsImage : String := s!"ghcr.io/typednotes/secrets-server:{secretsRelease}"
+
+/-- Each service's migration files, in its repository, at its release tag.
+    A new migration is a new line here. -/
+def appMigrations : List MigrationDecl :=
+  github "typednotes/typednotes" s!"v{appRelease}" ["migrations/0001_core.sql"]
+def ledgerMigrations : List MigrationDecl :=
+  github "typednotes/ledger" s!"v{ledgerRelease}" ["sql/0001_init.sql"]
+def liaisonMigrations : List MigrationDecl :=
+  github "typednotes/liaison" s!"v{liaisonRelease}" ["sql/0001_audit_log.sql"]
+def secretsMigrations : List MigrationDecl :=
+  github "typednotes/secrets" s!"v{secretsRelease}"
+    ["crates/secrets-storage-postgres/src/migrations/0001_init.sql"]
+
+/-- pgweb, pinned. Configured entirely through environment variables, which
+    is what a Serverless Container can set (there is no command/args field):
+    `PGWEB_DATABASE_URL`, `PGWEB_AUTH_USER`/`PGWEB_AUTH_PASS` for HTTP basic
+    auth, and `PGWEB_LOCK_SESSION` — all read by pgweb 0.17's
+    `pkg/command/options.go` (checked 2026-09-23). Its image listens on 8081. -/
+def inspectorImage : String := "docker.io/sosedoff/pgweb:0.17.0"
 
 fleet typednotes in paris where
   provider scaleway where
+    -- ── Operator-supplied secrets ───────────────────────────────────────
+    -- `fromEnv` names a variable, never a value: each is read once, when the
+    -- secret is first created, and nothing secret is committed here.
+
+    -- The vault's master key. Losing it loses what the vault encrypted.
     resource secrets "secrets-master-key" as masterKey
       { valueFrom := fromEnv "SECRETS_MASTER_KEY" }
 
-    -- The password for the initial `admin` user. `secrets-server` creates
-    -- that user, with a full-access `root` policy, **only** when both
-    -- `SECRETS_SERVER_BOOTSTRAP_USERNAME` and `..._PASSWORD` are set at
-    -- startup; with neither, it comes up with no users at all and nothing
-    -- can log in. This fleet deployed that way once — the service answered
-    -- `/v1/sys/health` with an empty `kv_store` and no way to get a token.
-    --
-    -- `bootstrap_admin` is a no-op once the user exists, so this stays
-    -- declared rather than being a one-shot: it is what the *first* start
-    -- against an empty database needs, including after a teardown.
-    -- Changing the value here does **not** rotate the password; the server
-    -- only reads it when the user is absent.
+    -- The password for the vault's initial `admin` user, read by
+    -- `secrets-server` only when that user is absent (so changing it here
+    -- does not rotate it).
     resource secrets "secrets-bootstrap-password" as bootstrapPassword
       { valueFrom := fromEnv "SECRETS_BOOTSTRAP_PASSWORD" }
 
-    -- The identity the database authenticates. On Scaleway an `iam` resource
-    -- is an IAM *application*, and `policies` is a list of permission-set
-    -- names granted over the credentials' project.
-    resource iam "secrets-db-app"
-      { policies := [dbAccess] }
+    -- The warrant root key `liaison` verifies HMAC tag chains against
+    -- (`broker.md` §3). `core` will mint with the same key.
+    resource secrets "liaison-root-key" as liaisonRootKey
+      { valueFrom := fromEnv "LIAISON_ROOT_KEY" }
 
-    -- Serverless, not classic: capacity bounds and no `instanceClass`, which
-    -- is what routes this to the Serverless SQL backend. See the header for
-    -- why the two `unused-` fields are spelled that way.
+    -- `liaison`'s own service token for `secrets-server`. It can only be
+    -- minted once the vault is up (log in as `admin`, issue a token for
+    -- liaison), so the first deploy is two applies — see the README.
+    resource secrets "liaison-secrets-token" as liaisonSecretsToken
+      { valueFrom := fromEnv "LIAISON_SECRETS_TOKEN" }
+
+    -- HTTP basic auth for the DB inspector. Both halves are operator-chosen
+    -- and kept in Secret Manager; the username is not sensitive, but it is
+    -- yours to pick and this keeps it out of the repo.
+    resource secrets "db-inspector-username" as inspectorUser
+      { valueFrom := fromEnv "DB_INSPECTOR_USERNAME" }
+    resource secrets "db-inspector-password" as inspectorPassword
+      { valueFrom := fromEnv "DB_INSPECTOR_PASSWORD" }
+
+    -- ── Database identities (see the header) ────────────────────────────
+    resource iam "typednotes-db-migrator" { policies := [ddlAccess] }
+    resource iam "typednotes-db-observer" { policies := [readAccess] }
+    resource iam "typednotes-db-runtime"  { policies := [dataAccess] }
+
+    resource secrets "typednotes-db-migrator-key" as migratorKey
+      { valueFrom := apiKeyFor "typednotes-db-migrator" }
+    resource secrets "typednotes-db-observer-key" as observerKey
+      { valueFrom := apiKeyFor "typednotes-db-observer" }
+    resource secrets "typednotes-db-runtime-key" as runtimeKey
+      { valueFrom := apiKeyFor "typednotes-db-runtime" }
+
+    -- ── Databases ───────────────────────────────────────────────────────
+    -- Serverless, not classic: capacity bounds and no `instanceClass`. No
+    -- master user exists, so `masterPasswordSecret` is `""` (infra ≥ 0.12.1).
     resource postgres "secrets-db" as secretsDb
       { masterUsername       := "unused-serverless-sql-is-iam-only"
-      , masterPasswordSecret := "unused-serverless-sql-is-iam-only"
+      , masterPasswordSecret := ""
       , minCapacity          := 0
       , maxCapacity          := 4 }
 
-    -- Minted at apply, for the application above. The value is the key's
-    -- secret half and is never read back.
-    resource secrets "secrets-db-key" as dbKey
-      { valueFrom := apiKeyFor "secrets-db-app" }
+    resource postgres "typednotes-db" as appDb
+      { masterUsername       := "unused-serverless-sql-is-iam-only"
+      , masterPasswordSecret := ""
+      , minCapacity          := 0
+      , maxCapacity          := 4 }
 
-    -- **The user name is the application id, not the access key.** An access
-    -- key (`SCW…`) looks far more like a username than a UUID does, and it is
-    -- the wrong answer: it fails with `password authentication failed for
-    -- user "SCW…"`, which points squarely at the password instead. This fleet
-    -- lost a debugging session to exactly that. `principalOf` is the id;
-    -- `accessKeyOf` is the access key and is not wanted here.
-    --
-    -- **The path is the database's own name** — `resource postgres
-    -- "secrets-db"` creates a database called `secrets-db` and nothing else.
-    -- Getting it wrong fails with `database "…" does not exist`, after apply
-    -- has already reported success.
-    --
-    -- **`?sslmode=require` is mandatory** and `endpointOf` does not supply
-    -- it: the backend strips the query string off the endpoint Scaleway
-    -- reports, so `.endpoint` means `host:port` here as it does everywhere.
-    --
-    -- Both halves go through `urlEncode`. Scaleway's keys are UUID-shaped
-    -- today, so nothing needs escaping — but a single `/` in a credential
-    -- ends the URL's authority early and surfaces as `invalid port number`,
-    -- naming the wrong field entirely, which this fleet also lost a session
-    -- to. Encoding is free and removes the class.
-    resource secrets "secrets-db-url" as dbUrl
-      { valueFrom := composed
-          expr!"postgres://\
-{(principalOf dbKey).map Network.HTTP.Types.urlEncode}:\
-{(secretValueOf dbKey).map Network.HTTP.Types.urlEncode}\
-@{endpointOf secretsDb}/secrets-db?sslmode=require" }
+    -- ── Connection strings, composed at apply ───────────────────────────
+    resource secrets "secrets-db-migrator-url" { valueFrom := composed (pgUrl migratorKey secretsDb "secrets-db") }
+    resource secrets "secrets-db-observer-url" { valueFrom := composed (pgUrl observerKey secretsDb "secrets-db") }
+    resource secrets "secrets-db-runtime-url" as secretsDbUrl
+      { valueFrom := composed (pgUrl runtimeKey secretsDb "secrets-db") }
 
-    -- The namespace the container is placed into. Declared here rather than
-    -- assumed: Serverless Containers will not place a container into a namespace
-    -- that does not exist, and `namespace'` is a reference, so this is created
-    -- first and cannot be misspelled. Creating it also creates the Container
-    -- Registry namespace the image below is pushed to.
+    resource secrets "typednotes-db-migrator-url" { valueFrom := composed (pgUrl migratorKey appDb "typednotes-db") }
+    resource secrets "typednotes-db-observer-url" as appDbObserverUrl
+      { valueFrom := composed (pgUrl observerKey appDb "typednotes-db") }
+    resource secrets "typednotes-db-runtime-url" as appDbUrl
+      { valueFrom := composed (pgUrl runtimeKey appDb "typednotes-db") }
+
+    -- ── Migration histories ─────────────────────────────────────────────
+    -- `users`, `identities`, `orgs`, `memberships` (`core.md` §4).
+    resource postgresMigrations "typednotes-core-history" as coreHistory
+      { database := "typednotes-db"
+      , connectionSecret := "typednotes-db-migrator-url"
+      , observerSecret := "typednotes-db-observer-url"
+      , schema := "core"
+      , migrations := appMigrations }
+
+    -- `usage_events`, `credit_ledger`, `credit_holds`. Its SQL
+    -- `references orgs(id)` and `users(id)`, so infra applies it after the
+    -- core history — read from the SQL, not declared.
+    resource postgresMigrations "typednotes-ledger-history" as ledgerHistory
+      { database := "typednotes-db"
+      , connectionSecret := "typednotes-db-migrator-url"
+      , observerSecret := "typednotes-db-observer-url"
+      , schema := "ledger"
+      , migrations := ledgerMigrations }
+
+    -- `audit_log`, which references nothing (it must record even malformed
+    -- attempts), so no order against the others.
+    resource postgresMigrations "typednotes-liaison-history" as liaisonHistory
+      { database := "typednotes-db"
+      , connectionSecret := "typednotes-db-migrator-url"
+      , observerSecret := "typednotes-db-observer-url"
+      , schema := "liaison"
+      , migrations := liaisonMigrations }
+
+    -- `kv_store`, from the directory `secrets-server`'s sqlx migrations live in.
+    resource postgresMigrations "secrets-history" as secretsHistory
+      { database := "secrets-db"
+      , connectionSecret := "secrets-db-migrator-url"
+      , observerSecret := "secrets-db-observer-url"
+      , schema := "secrets"
+      , migrations := secretsMigrations }
+
+    -- ── Containers ──────────────────────────────────────────────────────
+    -- Declared rather than assumed: Serverless Containers will not place a
+    -- container into a namespace that does not exist. Creating it also
+    -- creates the Container Registry namespace of the same name.
     resource scalewayContainerNamespace "typednotes" as ns
       { description := "typednotes services" }
 
-    resource scalewayContainer "secrets-server"
+    resource scalewayContainer "secrets-server" as secretsServer
       { namespace' := ns
-      -- Pinned, not `latest`: see the header. A moving tag cannot be
-      -- diffed, so a new release would apply as a no-op.
-      , image      := "ghcr.io/typednotes/secrets-server:0.1.1"
+      , image      := secretsImage
       , port       := 8200
-      -- Plain `env`, not `secretEnv`: a username is not a secret, and
-      -- putting it here keeps it visible in the plan and the console where
-      -- it is useful. Its partner password is a secret binding below;
-      -- `config.validate()` rejects one without the other.
-      , env        := [ ("SECRETS_SERVER_BOOTSTRAP_USERNAME", "admin") ]
+      , migrations := [secretsHistory]
+      -- A username is not a secret; its password partner is below, and
+      -- `config.validate()` rejects one without the other. Migrations are
+      -- infra's: the server only checks that `kv_store` exists.
+      , env        := [ ("SECRETS_SERVER_BOOTSTRAP_USERNAME", "admin")
+                      , ("SECRETS_SERVER_STORAGE_MIGRATE", "false") ]
       , secretEnv  := [ ("SECRETS_MASTER_KEY", masterKey)
                       , ("SECRETS_SERVER_BOOTSTRAP_PASSWORD", bootstrapPassword)
-                      , ("SECRETS_SERVER_STORAGE_DATABASE_URL", dbUrl) ] }
+                      , ("SECRETS_SERVER_STORAGE_DATABASE_URL", secretsDbUrl) ] }
+
+    -- The Dioxus fullstack app: SSR, the wasm client, and the server
+    -- functions, from one binary. `PORT` is set by Scaleway; `IP=0.0.0.0` is
+    -- baked into the image.
+    resource scalewayContainer "typednotes-app"
+      { namespace' := ns
+      , image      := appImage
+      , port       := 8080
+      , migrations := [coreHistory]
+      , secretEnv  := [ ("DATABASE_URL", appDbUrl) ] }
+
+    -- The hold sweeper. It serves only `/health`, and `minScale := 1`
+    -- because scale-to-zero would stop the sweeper whenever nobody polled
+    -- it — expired holds would never be released.
+    resource scalewayContainer "ledger"
+      { namespace' := ns
+      , image      := ledgerImage
+      , port       := 8080
+      , minScale   := 1
+      , migrations := [ledgerHistory]
+      , secretEnv  := [ ("DATABASE_URL", appDbUrl) ] }
+
+    -- The broker. It writes ledger's `credit_holds`/`credit_ledger` as well
+    -- as its own `audit_log` — a dependency in its code, not its SQL — so its
+    -- rollout waits for both histories. `SECRETS_HOST` is the vault
+    -- container's own domain, read from what Scaleway reports once it
+    -- exists — an ordering edge as well as a value, so `liaison` is always
+    -- created after `secrets-server`.
+    resource scalewayContainer "liaison"
+      { namespace' := ns
+      , image      := liaisonImage
+      , port       := 8080
+      , migrations := [ledgerHistory, liaisonHistory]
+      , env        := (observedOf secretsServer).map fun vault =>
+                        [ ("SECRETS_HOST", vault.url), ("LIAISON_PORT", "8080") ]
+      , secretEnv  := [ ("LIAISON_ROOT_KEY", liaisonRootKey)
+                      , ("DATABASE_URL", appDbUrl)
+                      , ("SECRETS_TOKEN", liaisonSecretsToken) ] }
+
+    -- A web UI to inspect `typednotes-db` — Scaleway's console has none for
+    -- Serverless SQL (only connection strings for `psql`). Three layers:
+    -- HTTP basic auth with operator-supplied credentials; the *observer*
+    -- identity, which can only `SELECT`, so nothing can be changed through
+    -- it even past the password; and `PGWEB_LOCK_SESSION`, which disables
+    -- pgweb's "connect to another server" form, so it cannot be turned into
+    -- a proxy to arbitrary hosts. It waits for every history on the
+    -- database, so it first comes up on the full schema. The vault's
+    -- database is deliberately not exposed: it holds only ciphertext.
+    resource scalewayContainer "db-inspector"
+      { namespace' := ns
+      , image      := inspectorImage
+      , port       := 8081
+      , migrations := [coreHistory, ledgerHistory, liaisonHistory]
+      , env        := [ ("PGWEB_LOCK_SESSION", "1") ]
+      , secretEnv  := [ ("PGWEB_DATABASE_URL", appDbObserverUrl)
+                      , ("PGWEB_AUTH_USER", inspectorUser)
+                      , ("PGWEB_AUTH_PASS", inspectorPassword) ] }
 
 /-- The ownership boundary, which the `fleet` command has no syntax for: it is
     an argument to `Infra.Cli.run`, in `Main.lean`.
 
-    `namePrefix` is here because of the database. A Serverless SQL Database
-    carries no tags and no description — there is nothing on one but the name
-    it was created with — so the name is the only evidence of ownership
-    available, and without a prefix to check it against this fleet could
-    create the database and then never be allowed to adopt or destroy it.
-    Everything else here is tagged normally and does not need it; only
-    `postgres` falls to the name rung.
+    The prefixes are here because of the databases. A Serverless SQL Database
+    carries no tags and no description — nothing but the name it was created
+    with — so the name is the only evidence of ownership, and a database
+    under no prefix could be created by this fleet and then never adopted or
+    destroyed. `secrets-` is what the vault's database was already called
+    (infra never renames), and `typednotes-` names the app's; two prefixes
+    need infra ≥ 0.14.0's `namePrefixes`. Everything else is tagged normally.
 
-    `secrets-` is what the database is already called, so this claims it
-    without a rename — and `infra` never renames anything, it only checks.
     The account also holds an unrelated Serverless SQL database called
-    `typednotes`, created long before this fleet; it does not match, so it
-    stays foreign and is left alone, which is the intended answer.
+    `typednotes`, created long before this fleet. It matches neither prefix —
+    `typednotes-` needs the dash — so it stays foreign and is left alone.
 
     `fleetName` makes the marker's *value* meaningful rather than just its
     presence, so a second fleet in this account could not claim these
-    resources by name. It is opt-in on both sides and is not an identity —
-    the realm check in `Main.lean`'s `accounts` is still the hard container. -/
+    resources by name. -/
 def typednotesBoundary : Boundary :=
-  { fleetName := some "typednotes", namePrefix := some "secrets-" }
+  { fleetName := some "typednotes"
+    namePrefix := some "secrets-"
+    namePrefixes := ["typednotes-"] }
 
--- No plaintext secret is written into this file. Decidable, so it is checked
--- at compile time rather than trusted — see `infra`'s `docs/diff-semantics.md`.
+-- ── Offline guarantees ────────────────────────────────────────────────────
+
+-- No plaintext secret is written into this file.
 #guard typednotes.plan.secretsAreSound
+
+-- Every history is sound as far as can be checked offline: ids from the file
+-- names, in order; every source an `https://` URL; quotable schemas. Their
+-- content, and the order it implies, are checked by `plan` after fetching.
+#guard typednotes.plan.migrationsAreSound
 
 -- Scaleway only: AWS credentials are neither needed nor read.
 #guard typednotes.keys.providers = [.scaleway]
 
--- Paris means `fr-par` here. Independent of the image's registry host — the
--- container's own placement is the only thing this guard is about.
+-- Paris means `fr-par`.
 #guard (typednotes.regions.region .scaleway).map Region.code = some "fr-par"
 #guard typednotes.regions.covers typednotes.keys
 
--- The name rung only decides `postgres`, but it decides it silently: a
--- database named outside the prefix would apply perfectly cleanly and then be
--- unmanageable for ever. Checked here rather than discovered later.
+-- Every database is claimable: the name rung decides `postgres`, silently —
+-- a database named outside the boundary's prefixes would apply cleanly and
+-- then be unmanageable for ever.
 #guard (Finite.elems (α := typednotes.keys.Key .scaleway .postgres)).all fun key =>
-  (typednotes.keys.name .scaleway .postgres key).startsWith "secrets-"
+  typednotesBoundary.prefixes.any fun p =>
+    (typednotes.keys.name .scaleway .postgres key).startsWith p
 
--- One identity, one minted key. If a second `apiKeyFor` ever appears without a
--- second `iam` resource to mint against, this is what says so.
-#guard typednotes.keys.count .scaleway .iam = 1
+-- Three identities, three minted keys. A fourth `apiKeyFor` without a fourth
+-- `iam` resource to mint against fails here.
+#guard typednotes.keys.count .scaleway .iam = 3
+
+-- Four histories, five containers.
+#guard typednotes.keys.count .scaleway .postgresMigrations = 4
+#guard typednotes.keys.count .scaleway .scalewayContainer = 5
+
+-- Each service's image and SQL come from the same release (both are built
+-- from one value; this pins the spelling of the result).
+#guard appImage = "ghcr.io/typednotes/typednotes:0.1.0"
+#guard appMigrations.map (·.source) =
+  [.url "https://raw.githubusercontent.com/typednotes/typednotes/v0.1.0/migrations/0001_core.sql"]
+#guard ledgerMigrations.map (·.id) = ["0001"]
+#guard secretsMigrations.map (·.source) =
+  [.url "https://raw.githubusercontent.com/typednotes/secrets/v1.1.0/crates/secrets-storage-postgres/src/migrations/0001_init.sql"]
+
+/- The order a first apply runs in, pinned offline. `runsBefore` reads the
+   *scheduled* order, not the declaration order, and a missing slot answers
+   false so a rename fails the guard instead of quietly satisfying it. -/
+private def firstApplyOrder : List String :=
+  match orderActions typednotes.plan (actions typednotes.plan (worldOf [])) with
+  | .ok ordered => ordered.map Action.slot
+  | .error _    => []
+
+private def runsBefore (a b : String) : Bool :=
+  match firstApplyOrder.idxOf? a, firstApplyOrder.idxOf? b with
+  | some i, some j => i < j
+  | _,      _      => false
+
+private def history (n : String) : String := s!"scaleway/postgres-migrations/{n}"
+private def container (n : String) : String := s!"scaleway/scaleway-container/{n}"
+
+-- (The order *between* histories comes from their SQL, which is fetched at
+-- `plan`, so it cannot be pinned here; `plan` refuses what it cannot order.)
+
+-- Each history waits for its database and its read-write URL.
+#guard runsBefore "scaleway/postgres/typednotes-db" (history "typednotes-core-history")
+#guard runsBefore "scaleway/secrets/typednotes-db-migrator-url" (history "typednotes-core-history")
+#guard runsBefore "scaleway/postgres/secrets-db" (history "secrets-history")
+
+-- Every rollout waits for its schema.
+#guard runsBefore (history "secrets-history") (container "secrets-server")
+#guard runsBefore (history "typednotes-core-history") (container "typednotes-app")
+#guard runsBefore (history "typednotes-ledger-history") (container "ledger")
+#guard runsBefore (history "typednotes-liaison-history") (container "liaison")
+-- liaison writes ledger's tables, so it waits for that history too.
+#guard runsBefore (history "typednotes-ledger-history") (container "liaison")
+#guard runsBefore (history "typednotes-core-history") (container "db-inspector")
+#guard runsBefore (history "typednotes-ledger-history") (container "db-inspector")
+#guard runsBefore (history "typednotes-liaison-history") (container "db-inspector")
+
+-- `liaison` reads the vault's domain, so it is created after it.
+#guard runsBefore (container "secrets-server") (container "liaison")
