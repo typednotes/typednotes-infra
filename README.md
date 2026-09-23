@@ -86,9 +86,9 @@ and a local Postgres before this was committed.
 ```
 lake build                       # compile only; no network, no credentials
 lake exe typednotes-infra check  # offline checks (also: bare `lake exe typednotes-infra`)
-lake exe typednotes-infra refresh  # observe Scaleway and cache to .infra/ — needs credentials
 lake exe typednotes-infra plan   # what would change — needs credentials, changes nothing
 lake exe typednotes-infra apply  # actually reconcile — the only mutating command
+lake exe typednotes-infra dump   # what the fleet sees in the account, as JSON (no secret values)
 ```
 
 `lake build` only compiles. `plan` and `apply` are `infra`'s, called from here and from CI.
@@ -173,8 +173,8 @@ verified against the live database with pgweb before being declared.
 
 Since infra 0.15.0, what this fleet manages is whatever carries its marker in the account
 (`managed-by-infra=typednotes`, or the `secrets-`/`typednotes-` name prefix for databases), found
-by asking Scaleway on every `plan` and `apply`. The `.infra/` ledger is only a cache, and a CI
-runner has none. So deleting a line from `Fleet.lean` destroys that resource on the next apply,
+by asking Scaleway on every `plan` and `apply`. Since 0.16.0 nothing is stored locally at all —
+no ledger, no cache — so a CI runner and a laptop reach the same plan. Deleting a line from `Fleet.lean` destroys that resource on the next apply,
 wherever it runs. And only resources carrying the marker are ever changed or destroyed: a declared
 name held by something else is warned about and left alone.
 

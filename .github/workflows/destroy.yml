@@ -18,7 +18,7 @@ name: Destroy
 #
 # `destroy` is `apply` against an empty declaration (see `infra`'s
 # `Infra/Cli.lean`), not a second teardown mechanism — it deletes everything
-# the ledger records as managed, in dependency order, and needs no
+# in the account carrying this fleet's marker, in dependency order, and needs no
 # `SECRETS_MASTER_KEY` since it never creates a secret.
 on:
   workflow_dispatch:
