@@ -185,8 +185,17 @@ live API key — deleting the secret deletes the key), `secrets-db-url`, and
 
 Because every kind the fleet's cloud offers is now listed on each run, the CI credentials need
 **read access to every Scaleway product**, not only the ones declared here; a listing that fails
-stops the run and names the product. (Scaleway queues are the exception: they are not listed
-unless declared, because listing them mints a credential.)
+stops the run and names the product. That includes Queues: listing them needs infra's own SQS
+credential, which infra mints once and keeps in the unmarked secret `infra-sqs-credential` (no
+fleet claims it; deleting it costs one mint), so the key also needs Queues credential management
+and Secret Manager read/write.
+
+Since infra 0.17.0, `forget scaleway <kind> "<name>"` removes this fleet's marker on the next apply
+(`RELEASE` in the plan) instead of having to stay in `Fleet.lean` forever; once released, the line
+can be deleted and the resource is left alone. (Databases carry their marker in their name, so a
+forgotten database's line has to stay.) AWS is named in `accounts` but declares nothing: runs with
+AWS credentials scan it for anything this fleet left there; without them, a note says it was not
+scanned. Drop it from `accounts` if the fleet has nothing left on AWS.
 
 ### Known gap: liaison's vault token expires
 
