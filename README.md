@@ -169,24 +169,24 @@ which is how `db-inspector` failed its first start. It now gets its own URL with
 `options=databaseid%3D<id>` parameter Scaleway asks for (`pgUrlWithoutSni` in `Fleet.lean`),
 verified against the live database with pgweb before being declared.
 
-### Retiring a resource
+### Removing a resource destroys it — from CI too
 
-Deleting a line from `Fleet.lean` destroys the resource only where the ledger (`.infra/`) remembers
-it. A CI runner starts with an empty ledger, so an apply from `apply.yml` leaves an undeclared
-resource standing. To retire resources deliberately, rebuild the ledger from infra's ownership
-markers and apply from a machine with Scaleway credentials:
+Since infra 0.15.0, what this fleet manages is whatever carries its marker in the account
+(`managed-by-infra=typednotes`, or the `secrets-`/`typednotes-` name prefix for databases), found
+by asking Scaleway on every `plan` and `apply`. The `.infra/` ledger is only a cache, and a CI
+runner has none. So deleting a line from `Fleet.lean` destroys that resource on the next apply,
+wherever it runs. And only resources carrying the marker are ever changed or destroyed: a declared
+name held by something else is warned about and left alone.
 
-```
-lake exe typednotes-infra discover   # rebuilds .infra/ from the resources tagged as this fleet's
-lake exe typednotes-infra plan       # read it: every undeclared, fleet-owned resource shows as DELETE
-lake exe typednotes-infra apply
-```
-
-A minted-key secret's delete also deletes the API key it points at.
-
-Currently standing and no longer declared: `secrets-db-app` (an IAM application holding the DDL
-permission set), `secrets-db-key` (its live API key), `secrets-db-url`, and
+The next apply therefore also deletes what earlier versions left behind when their lines were
+removed: `secrets-db-app` (an IAM application with the DDL permission set), `secrets-db-key` (its
+live API key — deleting the secret deletes the key), `secrets-db-url`, and
 `typednotes-db-inspector-url` (composed with an empty user name by infra 0.14.0).
+
+Because every kind the fleet's cloud offers is now listed on each run, the CI credentials need
+**read access to every Scaleway product**, not only the ones declared here; a listing that fails
+stops the run and names the product. (Scaleway queues are the exception: they are not listed
+unless declared, because listing them mints a credential.)
 
 ### Known gap: liaison's vault token expires
 
