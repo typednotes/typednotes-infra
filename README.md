@@ -17,7 +17,7 @@ unconditionally.
 
 `Fleet.lean` is the whole declaration: the `typednotes` system of
 [`typednotes/typednotes`](https://github.com/typednotes/typednotes)'s `docs/architecture.md`,
-as far as it is built — 30 Scaleway resources in one apply.
+as far as it is built — 31 Scaleway resources in one apply.
 
 | Container | What | Database | Image |
 |---|---|---|---|
@@ -28,7 +28,7 @@ as far as it is built — 30 Scaleway resources in one apply.
 | `db-inspector` | [pgweb](https://github.com/sosedoff/pgweb): browse and query `typednotes-db`, read-only, password-gated | `typednotes-db` | `docker.io/sosedoff/pgweb:0.17.0` |
 
 Around them: one container namespace, two Serverless SQL databases, three IAM identities
-(migrator / observer / runtime) with one minted API key each, six composed connection strings,
+(migrator / observer / runtime) with one minted API key each, seven composed connection strings,
 six operator-supplied secrets, and **four migration histories**.
 
 ### Schemas are declared resources
@@ -77,7 +77,8 @@ the fleet runs pgweb at the `db-inspector` container's URL. Three independent pr
    used as a proxy to other hosts.
 
 It shows `typednotes-db` (app, ledger, liaison). The vault's database is deliberately not exposed —
-it holds only ciphertext. All three protections were checked against the real `pgweb:0.17.0` image
+it holds only ciphertext. pgweb's driver sends no TLS SNI, which Serverless SQL needs, so its
+connection string carries `options=databaseid%3D<id>` instead (see below). All three protections were checked against the real `pgweb:0.17.0` image
 and a local Postgres before this was committed.
 
 ## Building and running
@@ -147,22 +148,26 @@ lake exe typednotes-infra plan          # read this
 lake exe typednotes-infra apply
 ```
 
-### Verify on the first live apply
+### What the first live apply confirmed (2026-09-23)
 
-Two Scaleway facts this fleet depends on are documented but **not yet exercised by any live run**
-(infra's `docs/diff-semantics.md` carries them):
+The Scaleway facts this fleet depended on without a live run behind them:
 
-- **`CREATE SCHEMA` under `ServerlessSQLDatabaseReadWrite`.** Each history keeps its bookkeeping in
-  `<schema>.infra_migrations`; Scaleway's permission page lists `CREATE TABLE`/`INDEX` for that set,
-  not `CREATE SCHEMA`. If it is refused, the first history fails before any migration runs or any
-  container rolls out — loud and early.
-- **Cross-identity access.** Tables are created by the migrator and used by the runtime and
-  observer identities. Scaleway says `GRANT` cannot be performed and access comes from the
-  permission sets, which apply to every table; the app's status line ("core schema present"), the
-  ledger's `/health`, and a query in the DB inspector are the three quick checks.
+- **`CREATE SCHEMA` works under `ServerlessSQLDatabaseReadWrite`**, although Scaleway's permission
+  page lists only `CREATE TABLE`/`INDEX` for that set: all four histories created their
+  `<schema>.infra_migrations` and recorded `0001`. So does `CREATE EXTENSION citext`.
+- **Cross-identity access works.** Tables the migrator created are readable by the observer
+  (`SELECT` on `orgs` and on every history table, while an `INSERT` is refused with `permission
+  denied`) and usable by the runtime identity (the app answers `/api/orgs`; ledger's `/health` is
+  `200` and its sweeper, which `UPDATE`s `credit_holds` every minute, has logged no failure).
+  Writes by the runtime identity have not been exercised directly yet — creating an org in the app
+  is the one-click check.
 
-Also check `CREATE EXTENSION citext` in the core history — `citext` is on Scaleway's supported list,
-and the migrator creates it.
+And one that nobody had predicted: **Serverless SQL routes connections by TLS SNI.** A client that
+does not send the host name during the handshake is refused with `Database hostname wasn't sent to
+server`. libpq (infra, ledger, liaison) and sqlx (app, vault) send it; pgweb's Go driver does not,
+which is how `db-inspector` failed its first start. It now gets its own URL with the
+`options=databaseid%3D<id>` parameter Scaleway asks for (`pgUrlWithoutSni` in `Fleet.lean`),
+verified against the live database with pgweb before being declared.
 
 ### Known gap: liaison's vault token expires
 
