@@ -91,13 +91,15 @@ import Infra
   `secrets-db-url`: reusing the name would have kept the old value, pointing
   at the retired `secrets-db-app` identity.
 
-  **Removing a line does not delete in CI.** Orphan deletion needs the
-  ledger (`.infra/`) to remember the resource, and a CI runner starts with
-  none — so a resource dropped from this file is left standing, not
-  destroyed. That is how the retired `secrets-db-app`, `secrets-db-key` and
-  `secrets-db-url` (and the empty-principal `typednotes-db-inspector-url`)
-  survived the first applies. Retiring something means deleting it
-  explicitly: see the README, "Retiring a resource".
+  **Removing a line destroys the resource, from any machine** (infra ≥
+  0.15.0): what this fleet manages is whatever carries its marker
+  (`managed-by-infra=typednotes`, or the `secrets-`/`typednotes-` name prefix
+  for databases), found by asking Scaleway on every run — the `.infra/`
+  ledger is only a cache, and a CI runner has none. Before 0.15.0 it was the
+  other way round, which is how the retired `secrets-db-app`,
+  `secrets-db-key`, `secrets-db-url` and the empty-principal
+  `typednotes-db-inspector-url` survived the first applies; the next apply
+  deletes them.
 
   ## Where it is, and the images
 
