@@ -89,10 +89,15 @@ import Infra
   composed URL is built once, at creation, and never diffed. That is why the
   runtime URL for the vault is `secrets-db-runtime-url` and not the old
   `secrets-db-url`: reusing the name would have kept the old value, pointing
-  at the retired `secrets-db-app` identity. The old `secrets-db-app`,
-  `secrets-db-key` and `secrets-db-url` are no longer declared, so the next
-  apply deletes them as orphans — after the builds, so nothing is left
-  without a credential in between.
+  at the retired `secrets-db-app` identity.
+
+  **Removing a line does not delete in CI.** Orphan deletion needs the
+  ledger (`.infra/`) to remember the resource, and a CI runner starts with
+  none — so a resource dropped from this file is left standing, not
+  destroyed. That is how the retired `secrets-db-app`, `secrets-db-key` and
+  `secrets-db-url` (and the empty-principal `typednotes-db-inspector-url`)
+  survived the first applies. Retiring something means deleting it
+  explicitly: see the README, "Retiring a resource".
 
   ## Where it is, and the images
 
@@ -278,7 +283,13 @@ fleet typednotes in paris where
     -- `pgUrlWithoutSni`. A separate secret rather than a changed
     -- `typednotes-db-observer-url` — composed secrets are create-only, and
     -- that one is also what infra observes migrations through.
-    resource secrets "typednotes-db-inspector-url" as inspectorDbUrl
+    --
+    -- Named `…-pgweb-url`, not `…-inspector-url`: the latter was composed by
+    -- infra 0.14.0, whose secrets listing reported a pre-existing key's
+    -- principal as "", so it holds a URL with an empty user name (pgweb:
+    -- `authentication failed`). Composed secrets are create-only, so a new
+    -- name is what gets a fresh one; infra 0.14.1 fixes the listing.
+    resource secrets "typednotes-db-pgweb-url" as inspectorDbUrl
       { valueFrom := composed (pgUrlWithoutSni observerKey appDb "typednotes-db") }
 
     -- ── Migration histories ─────────────────────────────────────────────
@@ -466,7 +477,7 @@ private def fakeEnv : Env typednotes.keys.Key :=
             { handle := ⟨"s"⟩, version := "1", accessKey := "SCWXXXX", principal := "app-id" }
         | _, _ => none }
 
-#guard match typednotes.keys.keyOfName? .scaleway .secrets "typednotes-db-inspector-url" with
+#guard match typednotes.keys.keyOfName? .scaleway .secrets "typednotes-db-pgweb-url" with
   | none => false
   | some key =>
     match typednotes.plan.assign .scaleway .secrets key with

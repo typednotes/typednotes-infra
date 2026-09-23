@@ -135,9 +135,9 @@ needs `default_project_id`.
 3. **An empty `secrets-db`.** The vault used to migrate itself with sqlx; the schema is now
    `secrets-history`'s, which will try to create `kv_store`. The existing database already has
    it, so **delete `secrets-db` in the Scaleway console first** (its contents were disposable —
-   there were no users besides `admin`); the apply recreates it. The old `secrets-db-app`,
-   `secrets-db-key` and `secrets-db-url` are no longer declared and are deleted as orphans at the
-   end of the same apply.
+   there were no users besides `admin`); the apply recreates it. (The old `secrets-db-app`,
+   `secrets-db-key` and `secrets-db-url` are no longer declared, but that does **not** delete
+   them from CI — see "Retiring a resource" below.)
 
 Then:
 
@@ -168,6 +168,25 @@ server`. libpq (infra, ledger, liaison) and sqlx (app, vault) send it; pgweb's G
 which is how `db-inspector` failed its first start. It now gets its own URL with the
 `options=databaseid%3D<id>` parameter Scaleway asks for (`pgUrlWithoutSni` in `Fleet.lean`),
 verified against the live database with pgweb before being declared.
+
+### Retiring a resource
+
+Deleting a line from `Fleet.lean` destroys the resource only where the ledger (`.infra/`) remembers
+it. A CI runner starts with an empty ledger, so an apply from `apply.yml` leaves an undeclared
+resource standing. To retire resources deliberately, rebuild the ledger from infra's ownership
+markers and apply from a machine with Scaleway credentials:
+
+```
+lake exe typednotes-infra discover   # rebuilds .infra/ from the resources tagged as this fleet's
+lake exe typednotes-infra plan       # read it: every undeclared, fleet-owned resource shows as DELETE
+lake exe typednotes-infra apply
+```
+
+A minted-key secret's delete also deletes the API key it points at.
+
+Currently standing and no longer declared: `secrets-db-app` (an IAM application holding the DDL
+permission set), `secrets-db-key` (its live API key), `secrets-db-url`, and
+`typednotes-db-inspector-url` (composed with an empty user name by infra 0.14.0).
 
 ### Known gap: liaison's vault token expires
 
