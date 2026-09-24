@@ -178,16 +178,16 @@ def pgUrlWithoutSni {K : ProviderId → Kind → Type} (key : K .scaleway .secre
 /-- One release per service: the image tag, and — prefixed with `v` — the
     git tag its migrations are read at. Bump one of these to release that
     service (after its tag and image are published). -/
-def appRelease : String := "0.2.0"
+def appRelease : String := "0.3.0"
 def ledgerRelease : String := "0.3.0"
-def liaisonRelease : String := "0.3.0"
+def liaisonRelease : String := "0.4.0"
 def secretsRelease : String := "1.2.0"
 
 /-- The app's public origin: `app.typednotes.com`, a custom domain attached
     to the `typednotes-app` container by hand (README, "Custom domain") —
     `infra` has no DNS or container-domain kind yet. The app puts it in every
     OAuth redirect URI (`PUBLIC_URL`), so sign-in only works once the domain
-    is attached and these callbacks are registered with GitHub and Google. -/
+    is attached and these callbacks are registered with each OAuth provider. -/
 def appPublicUrl : String := "https://app.typednotes.com"
 
 def appImage : String := s!"ghcr.io/typednotes/typednotes:{appRelease}"
@@ -199,7 +199,8 @@ def secretsImage : String := s!"ghcr.io/typednotes/secrets-server:{secretsReleas
     A new migration is a new line here. -/
 def appMigrations : List MigrationDecl :=
   github "typednotes/typednotes" s!"v{appRelease}"
-    ["migrations/0001_core.sql", "migrations/0002_sessions_connections.sql"]
+    [ "migrations/0001_core.sql", "migrations/0002_sessions_connections.sql"
+    , "migrations/0003_projects_channels.sql" ]
 def ledgerMigrations : List MigrationDecl :=
   github "typednotes/ledger" s!"v{ledgerRelease}"
     ["sql/0001_init.sql", "sql/0002_credit_ledger_idempotency.sql"]
@@ -263,6 +264,36 @@ fleet typednotes in paris where
       { valueFrom := fromEnv "GOOGLE_CLIENT_ID" }
     resource secrets "google-client-secret" as googleClientSecret
       { valueFrom := fromEnv "GOOGLE_CLIENT_SECRET" }
+
+    -- The OAuth clients behind the `gitlab` and `dropbox` connections
+    -- (callbacks `https://app.typednotes.com/auth/{gitlab,dropbox}/callback`).
+    -- liaison refreshes both kinds of token with the same clients.
+    resource secrets "gitlab-client-id" as gitlabClientId
+      { valueFrom := fromEnv "GITLAB_CLIENT_ID" }
+    resource secrets "gitlab-client-secret" as gitlabClientSecret
+      { valueFrom := fromEnv "GITLAB_CLIENT_SECRET" }
+    resource secrets "dropbox-client-id" as dropboxClientId
+      { valueFrom := fromEnv "DROPBOX_CLIENT_ID" }
+    resource secrets "dropbox-client-secret" as dropboxClientSecret
+      { valueFrom := fromEnv "DROPBOX_CLIENT_SECRET" }
+
+    -- The Slack app: its OAuth client installs it in a workspace (the
+    -- `slack` connection, callback `…/auth/slack/callback`), and its signing
+    -- secret authenticates the Events API deliveries to `…/hooks/slack`.
+    resource secrets "slack-client-id" as slackClientId
+      { valueFrom := fromEnv "SLACK_CLIENT_ID" }
+    resource secrets "slack-client-secret" as slackClientSecret
+      { valueFrom := fromEnv "SLACK_CLIENT_SECRET" }
+    resource secrets "slack-signing-secret" as slackSigningSecret
+      { valueFrom := fromEnv "SLACK_SIGNING_SECRET" }
+
+    -- The Meta app behind WhatsApp interfaces: its app secret signs the
+    -- webhook deliveries to `…/hooks/whatsapp`, and the verify token is what
+    -- Meta echoes when that webhook is registered (operator-chosen).
+    resource secrets "whatsapp-app-secret" as whatsappAppSecret
+      { valueFrom := fromEnv "WHATSAPP_APP_SECRET" }
+    resource secrets "whatsapp-verify-token" as whatsappVerifyToken
+      { valueFrom := fromEnv "WHATSAPP_VERIFY_TOKEN" }
 
     -- HTTP basic auth for the DB inspector. Both halves are operator-chosen
     -- and kept in Secret Manager; the username is not sensitive, but it is
@@ -381,8 +412,8 @@ fleet typednotes in paris where
                       , ("SECRETS_SERVER_BOOTSTRAP_PASSWORD", bootstrapPassword)
                       , ("SECRETS_SERVER_STORAGE_DATABASE_URL", secretsDbUrl) ] }
 
-    -- The Dioxus fullstack app: SSR, the wasm client, the server functions
-    -- and the OAuth round trips, from one binary. `PORT` is set by Scaleway;
+    -- The Dioxus fullstack app: SSR, the wasm client, the server functions,
+    -- the OAuth round trips and the Slack/WhatsApp webhooks, from one binary. `PORT` is set by Scaleway;
     -- `IP=0.0.0.0` is baked into the image. It writes connection
     -- credentials into the vault (and cannot read them back), mints warrants
     -- with liaison's root key, and grants each new org ledger's welcome
@@ -410,7 +441,16 @@ fleet typednotes in paris where
                       , ("GITHUB_CLIENT_ID", githubClientId)
                       , ("GITHUB_CLIENT_SECRET", githubClientSecret)
                       , ("GOOGLE_CLIENT_ID", googleClientId)
-                      , ("GOOGLE_CLIENT_SECRET", googleClientSecret) ] }
+                      , ("GOOGLE_CLIENT_SECRET", googleClientSecret)
+                      , ("GITLAB_CLIENT_ID", gitlabClientId)
+                      , ("GITLAB_CLIENT_SECRET", gitlabClientSecret)
+                      , ("DROPBOX_CLIENT_ID", dropboxClientId)
+                      , ("DROPBOX_CLIENT_SECRET", dropboxClientSecret)
+                      , ("SLACK_CLIENT_ID", slackClientId)
+                      , ("SLACK_CLIENT_SECRET", slackClientSecret)
+                      , ("SLACK_SIGNING_SECRET", slackSigningSecret)
+                      , ("WHATSAPP_APP_SECRET", whatsappAppSecret)
+                      , ("WHATSAPP_VERIFY_TOKEN", whatsappVerifyToken) ] }
 
     -- The hold sweeper. It serves only `/health`, and `minScale := 1`
     -- because scale-to-zero would stop the sweeper whenever nobody polled
@@ -430,8 +470,8 @@ fleet typednotes in paris where
     -- exists — an ordering edge as well as a value, so `liaison` is always
     -- created after `secrets-server`.
     -- It logs in to the vault as `liaison` (read, plus create to write back
-    -- a refreshed Google token), and refreshes Drive tokens with the Google
-    -- OAuth client.
+    -- a refreshed OAuth token), and refreshes Drive, GitLab and Dropbox
+    -- tokens with the same OAuth clients as the app.
     resource scalewayContainer "liaison" as liaisonContainer
       { namespace' := ns
       , image      := liaisonImage
@@ -444,7 +484,11 @@ fleet typednotes in paris where
                       , ("DATABASE_URL", appDbUrl)
                       , ("SECRETS_PASSWORD", liaisonSecretsPassword)
                       , ("GOOGLE_CLIENT_ID", googleClientId)
-                      , ("GOOGLE_CLIENT_SECRET", googleClientSecret) ] }
+                      , ("GOOGLE_CLIENT_SECRET", googleClientSecret)
+                      , ("GITLAB_CLIENT_ID", gitlabClientId)
+                      , ("GITLAB_CLIENT_SECRET", gitlabClientSecret)
+                      , ("DROPBOX_CLIENT_ID", dropboxClientId)
+                      , ("DROPBOX_CLIENT_SECRET", dropboxClientSecret) ] }
 
     -- A web UI to inspect `typednotes-db` — Scaleway's console has none for
     -- Serverless SQL (only connection strings for `psql`). Three layers:
@@ -548,12 +592,15 @@ private def fakeEnv : Env typednotes.keys.Key :=
 
 -- Each service's image and SQL come from the same release (both are built
 -- from one value; this pins the spelling of the result).
-#guard appImage = "ghcr.io/typednotes/typednotes:0.2.0"
+#guard appImage = "ghcr.io/typednotes/typednotes:0.3.0"
+#guard liaisonImage = "ghcr.io/typednotes/liaison:0.4.0"
 -- No trailing slash: the app appends `/auth/…` to it.
 #guard appPublicUrl = "https://app.typednotes.com"
 #guard appMigrations.map (·.source) =
-  [ .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.2.0/migrations/0001_core.sql"
-  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.2.0/migrations/0002_sessions_connections.sql" ]
+  [ .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.3.0/migrations/0001_core.sql"
+  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.3.0/migrations/0002_sessions_connections.sql"
+  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.3.0/migrations/0003_projects_channels.sql" ]
+#guard appMigrations.map (·.id) = ["0001", "0002", "0003"]
 #guard ledgerMigrations.map (·.id) = ["0001", "0002"]
 #guard secretsMigrations.map (·.source) =
   [.url "https://raw.githubusercontent.com/typednotes/secrets/v1.2.0/crates/secrets-storage-postgres/src/migrations/0001_init.sql"]
