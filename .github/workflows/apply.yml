@@ -86,7 +86,12 @@ jobs:
           SECRETS_MASTER_KEY: ${{ secrets.SECRETS_MASTER_KEY }}
           SECRETS_BOOTSTRAP_PASSWORD: ${{ secrets.SECRETS_BOOTSTRAP_PASSWORD }}
           LIAISON_ROOT_KEY: ${{ secrets.LIAISON_ROOT_KEY }}
-          LIAISON_SECRETS_TOKEN: ${{ secrets.LIAISON_SECRETS_TOKEN }}
+          APP_SECRETS_PASSWORD: ${{ secrets.APP_SECRETS_PASSWORD }}
+          LIAISON_SECRETS_PASSWORD: ${{ secrets.LIAISON_SECRETS_PASSWORD }}
+          GITHUB_CLIENT_ID: ${{ secrets.OAUTH_GITHUB_CLIENT_ID }}
+          GITHUB_CLIENT_SECRET: ${{ secrets.OAUTH_GITHUB_CLIENT_SECRET }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           DB_INSPECTOR_USERNAME: ${{ secrets.DB_INSPECTOR_USERNAME }}
           DB_INSPECTOR_PASSWORD: ${{ secrets.DB_INSPECTOR_PASSWORD }}
         run: |
@@ -94,7 +99,9 @@ jobs:
           for v in SCW_ACCESS_KEY SCW_SECRET_KEY \
                    SCW_DEFAULT_PROJECT_ID SCW_DEFAULT_ORGANIZATION_ID \
                    SECRETS_MASTER_KEY SECRETS_BOOTSTRAP_PASSWORD \
-                   LIAISON_ROOT_KEY LIAISON_SECRETS_TOKEN \
+                   LIAISON_ROOT_KEY APP_SECRETS_PASSWORD LIAISON_SECRETS_PASSWORD \
+                   GITHUB_CLIENT_ID GITHUB_CLIENT_SECRET \
+                   GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET \
                    DB_INSPECTOR_USERNAME DB_INSPECTOR_PASSWORD; do
             [ -n "${!v}" ] || missing+=("$v")
           done
@@ -114,10 +121,13 @@ jobs:
       # password for the server's initial `admin` user: without it the
       # container starts with no users and nothing can log in.
       #
-      # `LIAISON_ROOT_KEY`, `LIAISON_SECRETS_TOKEN`, `DB_INSPECTOR_USERNAME`
-      # and `DB_INSPECTOR_PASSWORD` are the other four `fromEnv` secrets, read
-      # the same way — only when each is first created. See the README for
-      # why the liaison token is a placeholder on a first deploy.
+      # `LIAISON_ROOT_KEY`, the two vault service passwords, the four OAuth
+      # client values, `DB_INSPECTOR_USERNAME` and `DB_INSPECTOR_PASSWORD` are
+      # the other `fromEnv` secrets, read the same way — only when each is
+      # first created. GitHub refuses repo secrets named `GITHUB_*`, so the
+      # GitHub OAuth client is stored as `OAUTH_GITHUB_CLIENT_{ID,SECRET}` and
+      # exported under the names `Fleet.lean` reads. The vault passwords must
+      # also be given to `scripts/vault-bootstrap.sh` — see the README.
       #
       # There is deliberately no database credential here. Serverless SQL
       # Database authenticates through IAM, and `apiKeyFor` mints a key at
@@ -158,7 +168,12 @@ jobs:
           SECRETS_MASTER_KEY: ${{ secrets.SECRETS_MASTER_KEY }}
           SECRETS_BOOTSTRAP_PASSWORD: ${{ secrets.SECRETS_BOOTSTRAP_PASSWORD }}
           LIAISON_ROOT_KEY: ${{ secrets.LIAISON_ROOT_KEY }}
-          LIAISON_SECRETS_TOKEN: ${{ secrets.LIAISON_SECRETS_TOKEN }}
+          APP_SECRETS_PASSWORD: ${{ secrets.APP_SECRETS_PASSWORD }}
+          LIAISON_SECRETS_PASSWORD: ${{ secrets.LIAISON_SECRETS_PASSWORD }}
+          GITHUB_CLIENT_ID: ${{ secrets.OAUTH_GITHUB_CLIENT_ID }}
+          GITHUB_CLIENT_SECRET: ${{ secrets.OAUTH_GITHUB_CLIENT_SECRET }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           DB_INSPECTOR_USERNAME: ${{ secrets.DB_INSPECTOR_USERNAME }}
           DB_INSPECTOR_PASSWORD: ${{ secrets.DB_INSPECTOR_PASSWORD }}
         run: lake script run apply --yes

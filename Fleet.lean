@@ -178,10 +178,10 @@ def pgUrlWithoutSni {K : ProviderId → Kind → Type} (key : K .scaleway .secre
 /-- One release per service: the image tag, and — prefixed with `v` — the
     git tag its migrations are read at. Bump one of these to release that
     service (after its tag and image are published). -/
-def appRelease : String := "0.1.0"
-def ledgerRelease : String := "0.2.0"
-def liaisonRelease : String := "0.2.0"
-def secretsRelease : String := "1.1.0"
+def appRelease : String := "0.2.0"
+def ledgerRelease : String := "0.3.0"
+def liaisonRelease : String := "0.3.0"
+def secretsRelease : String := "1.2.0"
 
 def appImage : String := s!"ghcr.io/typednotes/typednotes:{appRelease}"
 def ledgerImage : String := s!"ghcr.io/typednotes/ledger:{ledgerRelease}"
@@ -191,9 +191,11 @@ def secretsImage : String := s!"ghcr.io/typednotes/secrets-server:{secretsReleas
 /-- Each service's migration files, in its repository, at its release tag.
     A new migration is a new line here. -/
 def appMigrations : List MigrationDecl :=
-  github "typednotes/typednotes" s!"v{appRelease}" ["migrations/0001_core.sql"]
+  github "typednotes/typednotes" s!"v{appRelease}"
+    ["migrations/0001_core.sql", "migrations/0002_sessions_connections.sql"]
 def ledgerMigrations : List MigrationDecl :=
-  github "typednotes/ledger" s!"v{ledgerRelease}" ["sql/0001_init.sql"]
+  github "typednotes/ledger" s!"v{ledgerRelease}"
+    ["sql/0001_init.sql", "sql/0002_credit_ledger_idempotency.sql"]
 def liaisonMigrations : List MigrationDecl :=
   github "typednotes/liaison" s!"v{liaisonRelease}" ["sql/0001_audit_log.sql"]
 def secretsMigrations : List MigrationDecl :=
@@ -228,11 +230,32 @@ fleet typednotes in paris where
     resource secrets "liaison-root-key" as liaisonRootKey
       { valueFrom := fromEnv "LIAISON_ROOT_KEY" }
 
-    -- `liaison`'s own service token for `secrets-server`. It can only be
-    -- minted once the vault is up (log in as `admin`, issue a token for
-    -- liaison), so the first deploy is two applies — see the README.
-    resource secrets "liaison-secrets-token" as liaisonSecretsToken
-      { valueFrom := fromEnv "LIAISON_SECRETS_TOKEN" }
+    -- The vault passwords of the two service identities
+    -- (`typednotes/typednotes` docs/connections.md §4): each container logs
+    -- in as its own userpass user and logs in again before the hour-long
+    -- token expires. The users themselves are created in the vault by
+    -- `scripts/vault-bootstrap.sh`, with these same values — see the README.
+    -- This replaces the static `liaison-secrets-token`, which expired an
+    -- hour after it was minted.
+    resource secrets "app-secrets-password" as appSecretsPassword
+      { valueFrom := fromEnv "APP_SECRETS_PASSWORD" }
+    resource secrets "liaison-secrets-password" as liaisonSecretsPassword
+      { valueFrom := fromEnv "LIAISON_SECRETS_PASSWORD" }
+
+    -- The OAuth clients behind sign-in and the `github` / `gdrive`
+    -- connections. Callback URLs to register with each provider:
+    -- `https://<typednotes-app domain>/auth/{github,google}/callback`.
+    -- The client ids are not secret, but they are yours to supply and this
+    -- keeps them out of the repo. The Google client is also liaison's, which
+    -- refreshes Drive access tokens with it.
+    resource secrets "github-client-id" as githubClientId
+      { valueFrom := fromEnv "GITHUB_CLIENT_ID" }
+    resource secrets "github-client-secret" as githubClientSecret
+      { valueFrom := fromEnv "GITHUB_CLIENT_SECRET" }
+    resource secrets "google-client-id" as googleClientId
+      { valueFrom := fromEnv "GOOGLE_CLIENT_ID" }
+    resource secrets "google-client-secret" as googleClientSecret
+      { valueFrom := fromEnv "GOOGLE_CLIENT_SECRET" }
 
     -- HTTP basic auth for the DB inspector. Both halves are operator-chosen
     -- and kept in Secret Manager; the username is not sensitive, but it is
@@ -351,15 +374,32 @@ fleet typednotes in paris where
                       , ("SECRETS_SERVER_BOOTSTRAP_PASSWORD", bootstrapPassword)
                       , ("SECRETS_SERVER_STORAGE_DATABASE_URL", secretsDbUrl) ] }
 
-    -- The Dioxus fullstack app: SSR, the wasm client, and the server
-    -- functions, from one binary. `PORT` is set by Scaleway; `IP=0.0.0.0` is
-    -- baked into the image.
+    -- The Dioxus fullstack app: SSR, the wasm client, the server functions
+    -- and the OAuth round trips, from one binary. `PORT` is set by Scaleway;
+    -- `IP=0.0.0.0` is baked into the image. It writes connection
+    -- credentials into the vault (and cannot read them back), mints warrants
+    -- with liaison's root key, and grants each new org ledger's welcome
+    -- credits — so it waits for ledger's history too, and is created after
+    -- the two containers whose domains it reads. The redirect URIs it sends
+    -- providers come from the request's forwarded host.
     resource scalewayContainer "typednotes-app"
       { namespace' := ns
       , image      := appImage
       , port       := 8080
-      , migrations := [coreHistory]
-      , secretEnv  := [ ("DATABASE_URL", appDbUrl) ] }
+      , migrations := [coreHistory, ledgerHistory]
+      , env        := Expr.ap (Expr.map (fun vault broker =>
+                        [ ("SECRETS_URL", s!"https://{vault.url}")
+                        , ("SECRETS_USERNAME", "typednotes-app")
+                        , ("LIAISON_URL", s!"https://{broker.url}") ])
+                        (observedOf secretsServer))
+                        (observedOf liaisonContainer)
+      , secretEnv  := [ ("DATABASE_URL", appDbUrl)
+                      , ("SECRETS_PASSWORD", appSecretsPassword)
+                      , ("LIAISON_ROOT_KEY", liaisonRootKey)
+                      , ("GITHUB_CLIENT_ID", githubClientId)
+                      , ("GITHUB_CLIENT_SECRET", githubClientSecret)
+                      , ("GOOGLE_CLIENT_ID", googleClientId)
+                      , ("GOOGLE_CLIENT_SECRET", googleClientSecret) ] }
 
     -- The hold sweeper. It serves only `/health`, and `minScale := 1`
     -- because scale-to-zero would stop the sweeper whenever nobody polled
@@ -378,16 +418,22 @@ fleet typednotes in paris where
     -- container's own domain, read from what Scaleway reports once it
     -- exists — an ordering edge as well as a value, so `liaison` is always
     -- created after `secrets-server`.
-    resource scalewayContainer "liaison"
+    -- It logs in to the vault as `liaison` (read, plus create to write back
+    -- a refreshed Google token), and refreshes Drive tokens with the Google
+    -- OAuth client.
+    resource scalewayContainer "liaison" as liaisonContainer
       { namespace' := ns
       , image      := liaisonImage
       , port       := 8080
       , migrations := [ledgerHistory, liaisonHistory]
       , env        := (observedOf secretsServer).map fun vault =>
-                        [ ("SECRETS_HOST", vault.url), ("LIAISON_PORT", "8080") ]
+                        [ ("SECRETS_HOST", vault.url), ("SECRETS_USERNAME", "liaison")
+                        , ("LIAISON_PORT", "8080") ]
       , secretEnv  := [ ("LIAISON_ROOT_KEY", liaisonRootKey)
                       , ("DATABASE_URL", appDbUrl)
-                      , ("SECRETS_TOKEN", liaisonSecretsToken) ] }
+                      , ("SECRETS_PASSWORD", liaisonSecretsPassword)
+                      , ("GOOGLE_CLIENT_ID", googleClientId)
+                      , ("GOOGLE_CLIENT_SECRET", googleClientSecret) ] }
 
     -- A web UI to inspect `typednotes-db` — Scaleway's console has none for
     -- Serverless SQL (only connection strings for `psql`). Three layers:
@@ -491,12 +537,13 @@ private def fakeEnv : Env typednotes.keys.Key :=
 
 -- Each service's image and SQL come from the same release (both are built
 -- from one value; this pins the spelling of the result).
-#guard appImage = "ghcr.io/typednotes/typednotes:0.1.0"
+#guard appImage = "ghcr.io/typednotes/typednotes:0.2.0"
 #guard appMigrations.map (·.source) =
-  [.url "https://raw.githubusercontent.com/typednotes/typednotes/v0.1.0/migrations/0001_core.sql"]
-#guard ledgerMigrations.map (·.id) = ["0001"]
+  [ .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.2.0/migrations/0001_core.sql"
+  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.2.0/migrations/0002_sessions_connections.sql" ]
+#guard ledgerMigrations.map (·.id) = ["0001", "0002"]
 #guard secretsMigrations.map (·.source) =
-  [.url "https://raw.githubusercontent.com/typednotes/secrets/v1.1.0/crates/secrets-storage-postgres/src/migrations/0001_init.sql"]
+  [.url "https://raw.githubusercontent.com/typednotes/secrets/v1.2.0/crates/secrets-storage-postgres/src/migrations/0001_init.sql"]
 
 /- The order a first apply runs in, pinned offline. `runsBefore` reads the
    *scheduled* order, not the declaration order, and a missing slot answers
@@ -535,3 +582,7 @@ private def container (n : String) : String := s!"scaleway/scaleway-container/{n
 
 -- `liaison` reads the vault's domain, so it is created after it.
 #guard runsBefore (container "secrets-server") (container "liaison")
+-- The app reads both domains, and grants ledger's credits.
+#guard runsBefore (container "secrets-server") (container "typednotes-app")
+#guard runsBefore (container "liaison") (container "typednotes-app")
+#guard runsBefore (history "typednotes-ledger-history") (container "typednotes-app")
