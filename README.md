@@ -17,11 +17,11 @@ unconditionally.
 
 `Fleet.lean` is the whole declaration: the `typednotes` system of
 [`typednotes/typednotes`](https://github.com/typednotes/typednotes)'s `docs/architecture.md`,
-as far as it is built — 31 Scaleway resources in one apply.
+as far as it is built — 36 Scaleway resources in one apply.
 
 | Container | What | Database | Image |
 |---|---|---|---|
-| `typednotes-app` | the Dioxus fullstack app (`core`: users, orgs) | `typednotes-db` | `ghcr.io/typednotes/typednotes` |
+| `typednotes-app` | the Dioxus fullstack app (`core`: sign-in, users, orgs, connections) | `typednotes-db` | `ghcr.io/typednotes/typednotes` |
 | `ledger` | usage ledger — expired-hold sweeper, `/health` | `typednotes-db` | `ghcr.io/typednotes/ledger` |
 | `liaison` | the broker — the egress chokepoint | `typednotes-db` | `ghcr.io/typednotes/liaison` |
 | `secrets-server` | the vault | `secrets-db` | `ghcr.io/typednotes/secrets-server` |
@@ -29,7 +29,7 @@ as far as it is built — 31 Scaleway resources in one apply.
 
 Around them: one container namespace, two Serverless SQL databases, three IAM identities
 (migrator / observer / runtime) with one minted API key each, seven composed connection strings,
-six operator-supplied secrets, and **four migration histories**.
+eleven operator-supplied secrets, and **four migration histories**.
 
 ### Schemas are declared resources
 
@@ -116,11 +116,11 @@ needs `default_project_id`.
 **Before the first apply**, three things exist outside this repo:
 
 1. **The release tags, pushed** — `infra` `v0.14.0` (then `lake update infra` here and commit
-   `lake-manifest.json`), and the services' tags `typednotes` `v0.1.0`, `ledger` `v0.2.0`,
-   `liaison` `v0.2.0`, `secrets` `v1.1.0`, whose `.sql` files `plan` reads and whose
+   `lake-manifest.json`), and the services' tags `typednotes` `v0.2.0`, `ledger` `v0.3.0`,
+   `liaison` `v0.3.0`, `secrets` `v1.2.0`, whose `.sql` files `plan` reads and whose
    `docker-publish.yml` workflows build **the images**. Until a service's tag is pushed, `plan`
    stops with `HTTP 404 — is the tag or commit pushed, and the path right?`.
-2. **The six values** behind `Fleet.lean`'s `fromEnv` secrets, read only when each secret is
+2. **The eleven values** behind `Fleet.lean`'s `fromEnv` secrets, read only when each secret is
    first created. These name variables, never values; nothing secret is committed.
 
    | Variable | What |
@@ -128,7 +128,10 @@ needs `default_project_id`.
    | `SECRETS_MASTER_KEY` | the vault's master key (`openssl rand -hex 32`). **Keep it durably** — losing it loses the vault's contents |
    | `SECRETS_BOOTSTRAP_PASSWORD` | the vault's initial `admin` password (read only while that user is absent) |
    | `LIAISON_ROOT_KEY` | the warrant root key (`openssl rand -hex 32`) |
-   | `LIAISON_SECRETS_TOKEN` | liaison's token for the vault — a placeholder on the first deploy; see below |
+   | `APP_SECRETS_PASSWORD` | the app's vault password (user `typednotes-app`; ≥ 16 characters) — see "Vault service identities" |
+   | `LIAISON_SECRETS_PASSWORD` | liaison's vault password (user `liaison`; ≥ 16 characters) |
+   | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | a GitHub OAuth App: sign-in and the `github` connection. Callback `https://<typednotes-app domain>/auth/github/callback` |
+   | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | a Google OAuth web client: sign-in and the `gdrive` connection (Drive API enabled). Callback `https://<typednotes-app domain>/auth/google/callback`. liaison uses it to refresh Drive tokens |
    | `DB_INSPECTOR_USERNAME` | the DB inspector's basic-auth username — your choice |
    | `DB_INSPECTOR_PASSWORD` | the DB inspector's basic-auth password — make it long |
 
@@ -143,10 +146,16 @@ Then:
 
 ```
 export SECRETS_MASTER_KEY=... SECRETS_BOOTSTRAP_PASSWORD=... LIAISON_ROOT_KEY=... \
-       LIAISON_SECRETS_TOKEN=placeholder DB_INSPECTOR_USERNAME=... DB_INSPECTOR_PASSWORD=...
+       APP_SECRETS_PASSWORD=... LIAISON_SECRETS_PASSWORD=... \
+       GITHUB_CLIENT_ID=... GITHUB_CLIENT_SECRET=... GOOGLE_CLIENT_ID=... GOOGLE_CLIENT_SECRET=... \
+       DB_INSPECTOR_USERNAME=... DB_INSPECTOR_PASSWORD=...
 lake exe typednotes-infra plan          # read this
 lake exe typednotes-infra apply
+SECRETS_URL=https://<secrets-server domain> scripts/vault-bootstrap.sh   # once; see below
 ```
+
+The first time the app's domain is known (after the first apply), register the two callback URLs
+with GitHub and Google.
 
 ### What the first live apply confirmed (2026-09-23)
 
@@ -197,15 +206,31 @@ forgotten database's line has to stay.) AWS is named in `accounts` but declares 
 AWS credentials scan it for anything this fleet left there; without them, a note says it was not
 scanned. Drop it from `accounts` if the fleet has nothing left on AWS.
 
-### Known gap: liaison's vault token expires
+### Vault service identities
 
-`liaison` (v0) reads a static `SECRETS_TOKEN`. The vault issues tokens only by login, with a
-one-hour TTL (`secrets-auth-userpass`), and liaison neither logs in nor renews — so any egress call
-that needs a third-party credential fails closed an hour after the token was minted. Everything
-else about liaison (warrant verification, holds, the audit log) is unaffected. Until liaison learns
-to log in itself, deploy with a placeholder and treat credentialed egress as not yet available;
-a real token can be minted with
-`curl -X POST https://<secrets-server-url>/v1/auth/userpass/login -H 'content-type: application/json' -d '{"username":"admin","password":"…"}'`.
+The app and liaison each log in to the vault as their own `userpass` user and log in again before
+the hour-long token expires (`typednotes/typednotes` `docs/connections.md` §4). That replaces the
+static `liaison-secrets-token`, which expired an hour after it was minted; the next apply deletes
+that secret.
+
+The users live in the vault, not in Scaleway, so they are created once — after the vault is up
+(`secrets` ≥ 1.2.0, which adds the users endpoint) — by `scripts/vault-bootstrap.sh`, logged in as
+`admin`:
+
+| user | policy on `secret/data/thirdparty/` |
+|---|---|
+| `typednotes-app` | `create`, `delete` — it stores credentials but can never read them back |
+| `liaison` | `read`, plus `create` to write back a refreshed Google token |
+
+```
+SECRETS_URL=https://<secrets-server domain> SECRETS_BOOTSTRAP_PASSWORD=... \
+APP_SECRETS_PASSWORD=... LIAISON_SECRETS_PASSWORD=... scripts/vault-bootstrap.sh
+```
+
+The two passwords must equal the `app-secrets-password` / `liaison-secrets-password` values given to
+`apply`. Re-running the script is safe, and is also how to rotate them — then delete and recreate
+the two Scaleway secrets (secrets are create-only) and redeploy. Until the script has run, the app
+shows connections as failing to store, and liaison answers `credential_unavailable`.
 
 ## CI
 
@@ -234,10 +259,14 @@ Settings → Environments** if you want every apply or destroy to need a second 
 is the one gate the workflow files cannot enforce for themselves.
 
 Repo secrets needed: `SCW_ACCESS_KEY`, `SCW_SECRET_KEY`, `SCW_DEFAULT_PROJECT_ID` and
-`SCW_DEFAULT_ORGANIZATION_ID` for all three workflows, plus the six values behind `Fleet.lean`'s
+`SCW_DEFAULT_ORGANIZATION_ID` for all three workflows, plus the eleven values behind `Fleet.lean`'s
 `fromEnv` secrets for `apply.yml` only (`SECRETS_MASTER_KEY`, `SECRETS_BOOTSTRAP_PASSWORD`,
-`LIAISON_ROOT_KEY`, `LIAISON_SECRETS_TOKEN`, `DB_INSPECTOR_USERNAME`, `DB_INSPECTOR_PASSWORD`),
-needed only when those secrets are first created. The composed database URLs are never supplied
+`LIAISON_ROOT_KEY`, `APP_SECRETS_PASSWORD`, `LIAISON_SECRETS_PASSWORD`,
+`OAUTH_GITHUB_CLIENT_ID`, `OAUTH_GITHUB_CLIENT_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`,
+`DB_INSPECTOR_USERNAME`, `DB_INSPECTOR_PASSWORD`), needed only when those secrets are first created.
+GitHub refuses repo secrets whose names start with `GITHUB_`, hence the `OAUTH_` prefix: the
+workflow exports them as `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`. `LIAISON_SECRETS_TOKEN` is no
+longer read and can be deleted. The composed database URLs are never supplied
 here; the engine builds them at apply time.
 
 `SCW_DEFAULT_ORGANIZATION_ID` is what `checkAccounts` uses to establish which Scaleway
@@ -252,8 +281,8 @@ secret that was not a secret, and having it there meant CI could quietly run aga
 other than the `fr-par` in the container image's own URL — the account guard checks the
 organization, not the place. The secret can be deleted; leaving it set does nothing.
 
-`apply.yml` checks all ten are non-empty **before** it touches anything, and names the missing
-ones. That matters for the six `fromEnv` values in particular: they are not credentials, so
+`apply.yml` checks all fifteen are non-empty **before** it touches anything, and names the missing
+ones. That matters for the eleven `fromEnv` values in particular: they are not credentials, so
 nothing else would notice they were absent until the backend tried to create that secret —
 which is after the database already exists, leaving a half-applied fleet.
 
