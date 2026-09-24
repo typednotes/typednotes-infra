@@ -92,6 +92,15 @@ jobs:
           GITHUB_CLIENT_SECRET: ${{ secrets.OAUTH_GITHUB_CLIENT_SECRET }}
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GITLAB_CLIENT_ID: ${{ secrets.GITLAB_CLIENT_ID }}
+          GITLAB_CLIENT_SECRET: ${{ secrets.GITLAB_CLIENT_SECRET }}
+          DROPBOX_CLIENT_ID: ${{ secrets.DROPBOX_CLIENT_ID }}
+          DROPBOX_CLIENT_SECRET: ${{ secrets.DROPBOX_CLIENT_SECRET }}
+          SLACK_CLIENT_ID: ${{ secrets.SLACK_CLIENT_ID }}
+          SLACK_CLIENT_SECRET: ${{ secrets.SLACK_CLIENT_SECRET }}
+          SLACK_SIGNING_SECRET: ${{ secrets.SLACK_SIGNING_SECRET }}
+          WHATSAPP_APP_SECRET: ${{ secrets.WHATSAPP_APP_SECRET }}
+          WHATSAPP_VERIFY_TOKEN: ${{ secrets.WHATSAPP_VERIFY_TOKEN }}
           DB_INSPECTOR_USERNAME: ${{ secrets.DB_INSPECTOR_USERNAME }}
           DB_INSPECTOR_PASSWORD: ${{ secrets.DB_INSPECTOR_PASSWORD }}
         run: |
@@ -102,6 +111,10 @@ jobs:
                    LIAISON_ROOT_KEY APP_SECRETS_PASSWORD LIAISON_SECRETS_PASSWORD \
                    GITHUB_CLIENT_ID GITHUB_CLIENT_SECRET \
                    GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET \
+                   GITLAB_CLIENT_ID GITLAB_CLIENT_SECRET \
+                   DROPBOX_CLIENT_ID DROPBOX_CLIENT_SECRET \
+                   SLACK_CLIENT_ID SLACK_CLIENT_SECRET SLACK_SIGNING_SECRET \
+                   WHATSAPP_APP_SECRET WHATSAPP_VERIFY_TOKEN \
                    DB_INSPECTOR_USERNAME DB_INSPECTOR_PASSWORD; do
             [ -n "${!v}" ] || missing+=("$v")
           done
@@ -121,8 +134,10 @@ jobs:
       # password for the server's initial `admin` user: without it the
       # container starts with no users and nothing can log in.
       #
-      # `LIAISON_ROOT_KEY`, the two vault service passwords, the four OAuth
-      # client values, `DB_INSPECTOR_USERNAME` and `DB_INSPECTOR_PASSWORD` are
+      # `LIAISON_ROOT_KEY`, the two vault service passwords, the ten OAuth
+      # client values (GitHub, Google, GitLab, Dropbox, Slack), the Slack
+      # signing secret, the two WhatsApp webhook values,
+      # `DB_INSPECTOR_USERNAME` and `DB_INSPECTOR_PASSWORD` are
       # the other `fromEnv` secrets, read the same way — only when each is
       # first created. GitHub refuses repo secrets named `GITHUB_*`, so the
       # GitHub OAuth client is stored as `OAUTH_GITHUB_CLIENT_{ID,SECRET}` and
@@ -174,6 +189,15 @@ jobs:
           GITHUB_CLIENT_SECRET: ${{ secrets.OAUTH_GITHUB_CLIENT_SECRET }}
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GITLAB_CLIENT_ID: ${{ secrets.GITLAB_CLIENT_ID }}
+          GITLAB_CLIENT_SECRET: ${{ secrets.GITLAB_CLIENT_SECRET }}
+          DROPBOX_CLIENT_ID: ${{ secrets.DROPBOX_CLIENT_ID }}
+          DROPBOX_CLIENT_SECRET: ${{ secrets.DROPBOX_CLIENT_SECRET }}
+          SLACK_CLIENT_ID: ${{ secrets.SLACK_CLIENT_ID }}
+          SLACK_CLIENT_SECRET: ${{ secrets.SLACK_CLIENT_SECRET }}
+          SLACK_SIGNING_SECRET: ${{ secrets.SLACK_SIGNING_SECRET }}
+          WHATSAPP_APP_SECRET: ${{ secrets.WHATSAPP_APP_SECRET }}
+          WHATSAPP_VERIFY_TOKEN: ${{ secrets.WHATSAPP_VERIFY_TOKEN }}
           DB_INSPECTOR_USERNAME: ${{ secrets.DB_INSPECTOR_USERNAME }}
           DB_INSPECTOR_PASSWORD: ${{ secrets.DB_INSPECTOR_PASSWORD }}
         run: lake script run apply --yes

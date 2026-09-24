@@ -17,11 +17,11 @@ unconditionally.
 
 `Fleet.lean` is the whole declaration: the `typednotes` system of
 [`typednotes/typednotes`](https://github.com/typednotes/typednotes)'s `docs/architecture.md`,
-as far as it is built — 36 Scaleway resources in one apply.
+as far as it is built — 45 Scaleway resources in one apply.
 
 | Container | What | Database | Image |
 |---|---|---|---|
-| `typednotes-app` | the Dioxus fullstack app (`core`: sign-in, users, orgs, connections) | `typednotes-db` | `ghcr.io/typednotes/typednotes` |
+| `typednotes-app` | the Dioxus fullstack app (`core`: sign-in, users, orgs, projects, connections, messaging webhooks) | `typednotes-db` | `ghcr.io/typednotes/typednotes` |
 | `ledger` | usage ledger — expired-hold sweeper, `/health` | `typednotes-db` | `ghcr.io/typednotes/ledger` |
 | `liaison` | the broker — the egress chokepoint | `typednotes-db` | `ghcr.io/typednotes/liaison` |
 | `secrets-server` | the vault | `secrets-db` | `ghcr.io/typednotes/secrets-server` |
@@ -29,7 +29,7 @@ as far as it is built — 36 Scaleway resources in one apply.
 
 Around them: one container namespace, two Serverless SQL databases, three IAM identities
 (migrator / observer / runtime) with one minted API key each, seven composed connection strings,
-eleven operator-supplied secrets, and **four migration histories**.
+twenty operator-supplied secrets, and **four migration histories**.
 
 ### Schemas are declared resources
 
@@ -115,7 +115,7 @@ needs `default_project_id`.
 
 Everything this fleet needs from you, in one place. Set each as a **GitHub repository secret**
 (Settings → Secrets and variables → Actions) for CI, or export it under the **environment name**
-for a local `plan`/`apply`. `apply.yml` checks that all fifteen are non-empty before it touches
+for a local `plan`/`apply`. `apply.yml` checks that all twenty-four are non-empty before it touches
 anything, and names any that are missing.
 
 **Scaleway credentials** — read by every workflow (`plan.yml`, `apply.yml`, `destroy.yml`):
@@ -142,6 +142,15 @@ that secret is deleted and recreated. Nothing here is committed.
 | `OAUTH_GITHUB_CLIENT_SECRET` | `GITHUB_CLIENT_SECRET` | that OAuth App's client secret |
 | `GOOGLE_CLIENT_ID` | same | a Google Cloud OAuth client (type *Web application*, Google Drive API enabled): sign-in and the `gdrive` connection. Authorized redirect URI `https://app.typednotes.com/auth/google/callback`. liaison uses it to refresh Drive tokens |
 | `GOOGLE_CLIENT_SECRET` | same | that OAuth client's secret |
+| `GITLAB_CLIENT_ID` | same | a [gitlab.com application](https://gitlab.com/-/user_settings/applications) (confidential, scopes `read_user read_api read_repository write_repository`): the `gitlab` connection. Redirect URI `https://app.typednotes.com/auth/gitlab/callback`. liaison uses it to refresh GitLab tokens |
+| `GITLAB_CLIENT_SECRET` | same | that application's secret |
+| `DROPBOX_CLIENT_ID` | same | a [Dropbox app](https://www.dropbox.com/developers/apps)'s app key (scoped access; `account_info.read` plus the `files.*` scopes you want): the `dropbox` connection. Redirect URI `https://app.typednotes.com/auth/dropbox/callback`. liaison uses it to refresh Dropbox tokens |
+| `DROPBOX_CLIENT_SECRET` | same | that app's app secret |
+| `SLACK_CLIENT_ID` | same | a [Slack app](https://api.slack.com/apps)'s client id: installing it in a workspace is the `slack` connection. Redirect URL `https://app.typednotes.com/auth/slack/callback`; bot scopes `chat:write chat:write.public channels:read groups:read channels:history groups:history im:history`; **token rotation off** |
+| `SLACK_CLIENT_SECRET` | same | that app's client secret |
+| `SLACK_SIGNING_SECRET` | same | that app's signing secret. Event Subscriptions request URL `https://app.typednotes.com/hooks/slack`, bot events `message.channels`, `message.groups`, `message.im` |
+| `WHATSAPP_APP_SECRET` | same | the app secret of the [Meta app](https://developers.facebook.com/apps) with the WhatsApp product: it signs webhook deliveries. Webhook callback URL `https://app.typednotes.com/hooks/whatsapp`, field `messages` |
+| `WHATSAPP_VERIFY_TOKEN` | same | a token of your choice, entered as that webhook's verify token: `openssl rand -hex 16` |
 | `DB_INSPECTOR_USERNAME` | same | the DB inspector's basic-auth username — your choice |
 | `DB_INSPECTOR_PASSWORD` | same | the DB inspector's basic-auth password — make it long |
 
@@ -162,12 +171,12 @@ by the apply itself, and the vault's service users are created by `scripts/vault
 **Before the first apply**, three things exist outside this repo:
 
 1. **The release tags, pushed** — `infra` `v0.14.0` (then `lake update infra` here and commit
-   `lake-manifest.json`), and the services' tags `typednotes` `v0.2.0`, `ledger` `v0.3.0`,
-   `liaison` `v0.3.0`, `secrets` `v1.2.0`, whose `.sql` files `plan` reads and whose
+   `lake-manifest.json`), and the services' tags `typednotes` `v0.3.0`, `ledger` `v0.3.0`,
+   `liaison` `v0.4.0`, `secrets` `v1.2.0`, whose `.sql` files `plan` reads and whose
    `docker-publish.yml` workflows build **the images**. Until a service's tag is pushed, `plan`
    stops with `HTTP 404 — is the tag or commit pushed, and the path right?`.
-2. **The fifteen secrets** of "Secrets to set" above — the four Scaleway credentials and the
-   eleven values behind `Fleet.lean`'s `fromEnv` secrets.
+2. **The twenty-four secrets** of "Secrets to set" above — the four Scaleway credentials and the
+   twenty values behind `Fleet.lean`'s `fromEnv` secrets.
 
 3. **An empty `secrets-db`.** The vault used to migrate itself with sqlx; the schema is now
    `secrets-history`'s, which will try to create `kv_store`. The existing database already has
@@ -182,14 +191,18 @@ Then:
 export SECRETS_MASTER_KEY=... SECRETS_BOOTSTRAP_PASSWORD=... LIAISON_ROOT_KEY=... \
        APP_SECRETS_PASSWORD=... LIAISON_SECRETS_PASSWORD=... \
        GITHUB_CLIENT_ID=... GITHUB_CLIENT_SECRET=... GOOGLE_CLIENT_ID=... GOOGLE_CLIENT_SECRET=... \
+       GITLAB_CLIENT_ID=... GITLAB_CLIENT_SECRET=... DROPBOX_CLIENT_ID=... DROPBOX_CLIENT_SECRET=... \
+       SLACK_CLIENT_ID=... SLACK_CLIENT_SECRET=... SLACK_SIGNING_SECRET=... \
+       WHATSAPP_APP_SECRET=... WHATSAPP_VERIFY_TOKEN=... \
        DB_INSPECTOR_USERNAME=... DB_INSPECTOR_PASSWORD=...
 lake exe typednotes-infra plan          # read this
 lake exe typednotes-infra apply
 SECRETS_URL=https://<secrets-server domain> scripts/vault-bootstrap.sh   # once; see below
 ```
 
-Then attach the custom domain (next section) and register the two callback URLs with GitHub
-and Google. Until both are done, everything works except sign-in.
+Then attach the custom domain (next section) and register the callback URLs with GitHub,
+Google, GitLab, Dropbox and Slack, and the webhook URLs with Slack and Meta. Until both are
+done, everything works except sign-in, those connections and inbound messages.
 
 ### Custom domain
 
@@ -210,9 +223,11 @@ scw container domain create container-id=<id> hostname=app.typednotes.com
 scw container domain list container-id=<id>     # wait for status "ready"
 ```
 
-Then register the callbacks: `https://app.typednotes.com/auth/github/callback` in the GitHub OAuth
-App, and `https://app.typednotes.com/auth/google/callback` as an authorized redirect URI of the
-Google client.
+Then register the callbacks — `https://app.typednotes.com/auth/{github,google,gitlab,dropbox,slack}/callback`
+in each provider's app — and the webhooks: `https://app.typednotes.com/hooks/slack` as the Slack
+app's Event Subscriptions request URL (Slack sends a challenge the app answers), and
+`https://app.typednotes.com/hooks/whatsapp` as the Meta app's WhatsApp webhook, with
+`WHATSAPP_VERIFY_TOKEN` as its verify token. The exact settings for each are in "Secrets to set".
 
 How this sits next to the fleet:
 
@@ -333,7 +348,7 @@ is the one gate the workflow files cannot enforce for themselves.
 
 Repo secrets needed: the full list, with what each is and how to make it, is
 ["Secrets to set"](#secrets-to-set) — the four `SCW_*` credentials for all three workflows, and
-the eleven fleet values for `apply.yml` only. The composed database URLs are never supplied
+the twenty fleet values for `apply.yml` only. The composed database URLs are never supplied
 here; the engine builds them at apply time.
 
 `SCW_DEFAULT_ORGANIZATION_ID` is what `checkAccounts` uses to establish which Scaleway
@@ -348,8 +363,8 @@ secret that was not a secret, and having it there meant CI could quietly run aga
 other than the `fr-par` in the container image's own URL — the account guard checks the
 organization, not the place. The secret can be deleted; leaving it set does nothing.
 
-`apply.yml` checks all fifteen are non-empty **before** it touches anything, and names the missing
-ones. That matters for the eleven `fromEnv` values in particular: they are not credentials, so
+`apply.yml` checks all twenty-four are non-empty **before** it touches anything, and names the missing
+ones. That matters for the twenty `fromEnv` values in particular: they are not credentials, so
 nothing else would notice they were absent until the backend tried to create that secret —
 which is after the database already exists, leaving a half-applied fleet.
 
