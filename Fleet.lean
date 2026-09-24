@@ -183,6 +183,13 @@ def ledgerRelease : String := "0.3.0"
 def liaisonRelease : String := "0.3.0"
 def secretsRelease : String := "1.2.0"
 
+/-- The app's public origin: `app.typednotes.com`, a custom domain attached
+    to the `typednotes-app` container by hand (README, "Custom domain") —
+    `infra` has no DNS or container-domain kind yet. The app puts it in every
+    OAuth redirect URI (`PUBLIC_URL`), so sign-in only works once the domain
+    is attached and these callbacks are registered with GitHub and Google. -/
+def appPublicUrl : String := "https://app.typednotes.com"
+
 def appImage : String := s!"ghcr.io/typednotes/typednotes:{appRelease}"
 def ledgerImage : String := s!"ghcr.io/typednotes/ledger:{ledgerRelease}"
 def liaisonImage : String := s!"ghcr.io/typednotes/liaison:{liaisonRelease}"
@@ -244,7 +251,7 @@ fleet typednotes in paris where
 
     -- The OAuth clients behind sign-in and the `github` / `gdrive`
     -- connections. Callback URLs to register with each provider:
-    -- `https://<typednotes-app domain>/auth/{github,google}/callback`.
+    -- `https://app.typednotes.com/auth/{github,google}/callback` (`appPublicUrl`).
     -- The client ids are not secret, but they are yours to supply and this
     -- keeps them out of the repo. The Google client is also liaison's, which
     -- refreshes Drive access tokens with it.
@@ -380,8 +387,11 @@ fleet typednotes in paris where
     -- credentials into the vault (and cannot read them back), mints warrants
     -- with liaison's root key, and grants each new org ledger's welcome
     -- credits — so it waits for ledger's history too, and is created after
-    -- the two containers whose domains it reads. The redirect URIs it sends
-    -- providers come from the request's forwarded host.
+    -- the two containers whose domains it reads. `PUBLIC_URL` pins the
+    -- origin of the OAuth redirect URIs to the custom domain, whichever host
+    -- the request arrived on — so a visit to the Scaleway domain still signs
+    -- in through the registered callbacks. `env` is compared on apply, so
+    -- changing it redeploys the app.
     resource scalewayContainer "typednotes-app"
       { namespace' := ns
       , image      := appImage
@@ -390,7 +400,8 @@ fleet typednotes in paris where
       , env        := Expr.ap (Expr.map (fun vault broker =>
                         [ ("SECRETS_URL", s!"https://{vault.url}")
                         , ("SECRETS_USERNAME", "typednotes-app")
-                        , ("LIAISON_URL", s!"https://{broker.url}") ])
+                        , ("LIAISON_URL", s!"https://{broker.url}")
+                        , ("PUBLIC_URL", appPublicUrl) ])
                         (observedOf secretsServer))
                         (observedOf liaisonContainer)
       , secretEnv  := [ ("DATABASE_URL", appDbUrl)
@@ -538,6 +549,8 @@ private def fakeEnv : Env typednotes.keys.Key :=
 -- Each service's image and SQL come from the same release (both are built
 -- from one value; this pins the spelling of the result).
 #guard appImage = "ghcr.io/typednotes/typednotes:0.2.0"
+-- No trailing slash: the app appends `/auth/…` to it.
+#guard appPublicUrl = "https://app.typednotes.com"
 #guard appMigrations.map (·.source) =
   [ .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.2.0/migrations/0001_core.sql"
   , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.2.0/migrations/0002_sessions_connections.sql" ]
