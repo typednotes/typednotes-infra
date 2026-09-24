@@ -138,17 +138,17 @@ that secret is deleted and recreated. Nothing here is committed.
 | `LIAISON_ROOT_KEY` | same | the warrant root key, shared by the app (mints) and liaison (verifies): `openssl rand -hex 32` |
 | `APP_SECRETS_PASSWORD` | same | the app's vault password, user `typednotes-app`, ≥ 16 characters: `openssl rand -base64 32`. **Give the same value to `scripts/vault-bootstrap.sh`** |
 | `LIAISON_SECRETS_PASSWORD` | same | liaison's vault password, user `liaison`, ≥ 16 characters. **Same value to `scripts/vault-bootstrap.sh`** |
-| `OAUTH_GITHUB_CLIENT_ID` | `GITHUB_CLIENT_ID` | a [GitHub OAuth App](https://github.com/settings/developers)'s client id: sign-in and the `github` connection. Callback URL `https://<typednotes-app domain>/auth/github/callback` |
+| `OAUTH_GITHUB_CLIENT_ID` | `GITHUB_CLIENT_ID` | a [GitHub OAuth App](https://github.com/settings/developers)'s client id: sign-in and the `github` connection. Callback URL `https://app.typednotes.com/auth/github/callback` |
 | `OAUTH_GITHUB_CLIENT_SECRET` | `GITHUB_CLIENT_SECRET` | that OAuth App's client secret |
-| `GOOGLE_CLIENT_ID` | same | a Google Cloud OAuth client (type *Web application*, Google Drive API enabled): sign-in and the `gdrive` connection. Authorized redirect URI `https://<typednotes-app domain>/auth/google/callback`. liaison uses it to refresh Drive tokens |
+| `GOOGLE_CLIENT_ID` | same | a Google Cloud OAuth client (type *Web application*, Google Drive API enabled): sign-in and the `gdrive` connection. Authorized redirect URI `https://app.typednotes.com/auth/google/callback`. liaison uses it to refresh Drive tokens |
 | `GOOGLE_CLIENT_SECRET` | same | that OAuth client's secret |
 | `DB_INSPECTOR_USERNAME` | same | the DB inspector's basic-auth username — your choice |
 | `DB_INSPECTOR_PASSWORD` | same | the DB inspector's basic-auth password — make it long |
 
 GitHub refuses repository secrets whose names start with `GITHUB_`, so the GitHub OAuth client
 is stored as `OAUTH_GITHUB_CLIENT_*` and `apply.yml` exports it under the names `Fleet.lean`
-reads. The app's domain is only known after the first apply: register the two callback URLs
-then (the provider refuses sign-in until you do; nothing else depends on it).
+reads. The callbacks use the app's custom domain (`appPublicUrl` in `Fleet.lean`), which you
+attach after the first apply — see "Custom domain".
 
 **Not secrets you set:** the database connection strings and API keys are minted and composed
 by the apply itself, and the vault's service users are created by `scripts/vault-bootstrap.sh`
@@ -188,8 +188,47 @@ lake exe typednotes-infra apply
 SECRETS_URL=https://<secrets-server domain> scripts/vault-bootstrap.sh   # once; see below
 ```
 
-The first time the app's domain is known (after the first apply), register the two callback URLs
-with GitHub and Google.
+Then attach the custom domain (next section) and register the two callback URLs with GitHub
+and Google. Until both are done, everything works except sign-in.
+
+### Custom domain
+
+The app is served at **`https://app.typednotes.com`**. `infra` has no DNS or container-domain kind
+yet (DNS is under "Not in this version" in its `docs/coverage.md`), so the domain is attached by
+hand, once, with the [`scw` CLI](https://www.scaleway.com/en/cli/). The `typednotes.com` zone is in
+Scaleway Domains & DNS:
+
+```sh
+# the app container's id and its Scaleway domain (after the first apply)
+scw container container list name=typednotes-app -o json | jq -r '.[0] | .id, .domain_name'
+
+# point app.typednotes.com at it — a CNAME, hence a subdomain, not the bare typednotes.com
+scw dns record add typednotes.com name=app type=CNAME data=<domain_name>. ttl=300
+
+# tell Serverless Containers to answer for it; Scaleway issues the TLS certificate
+scw container domain create container-id=<id> hostname=app.typednotes.com
+scw container domain list container-id=<id>     # wait for status "ready"
+```
+
+Then register the callbacks: `https://app.typednotes.com/auth/github/callback` in the GitHub OAuth
+App, and `https://app.typednotes.com/auth/google/callback` as an authorized redirect URI of the
+Google client.
+
+How this sits next to the fleet:
+
+- **`PUBLIC_URL`.** `Fleet.lean` sets the app's `PUBLIC_URL` to `appPublicUrl`, and the app builds
+  every OAuth redirect URI from it, whichever host the request came in on. A visitor on the
+  Scaleway domain is therefore signed in through the registered `app.typednotes.com` callbacks and
+  ends up there. Before the domain is attached those callbacks do not resolve, so sign-in fails and
+  nothing else does. To serve somewhere else, change `appPublicUrl`: `env` is compared on apply,
+  so that alone redeploys the app.
+- **Infra leaves it alone.** It lists neither DNS records nor container domains, so no `plan` or
+  `apply` touches or reports them.
+- **Updates keep it.** Releases update the container in place and keep its id, so the binding
+  survives image bumps.
+- **A recreated container loses it.** If `typednotes-app` is ever destroyed and created again (a
+  `destroy`, or a change `infra` can only apply by replacement), its id and Scaleway domain
+  change. Delete the stale domain and record, then re-run the three commands.
 
 ### What the first live apply confirmed (2026-09-23)
 
