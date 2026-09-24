@@ -111,6 +111,52 @@ Credentials come from `infra`'s three-source chain — the Scaleway CLI's own co
 keychain, then environment variables (see `infra`'s `docs/authentication.md`). Scaleway also
 needs `default_project_id`.
 
+## Secrets to set
+
+Everything this fleet needs from you, in one place. Set each as a **GitHub repository secret**
+(Settings → Secrets and variables → Actions) for CI, or export it under the **environment name**
+for a local `plan`/`apply`. `apply.yml` checks that all fifteen are non-empty before it touches
+anything, and names any that are missing.
+
+**Scaleway credentials** — read by every workflow (`plan.yml`, `apply.yml`, `destroy.yml`):
+
+| Repo secret | What |
+|---|---|
+| `SCW_ACCESS_KEY` | API key access key. Needs read access to every Scaleway product (see "Removing a resource destroys it"), plus write on what the fleet manages |
+| `SCW_SECRET_KEY` | that API key's secret key |
+| `SCW_DEFAULT_PROJECT_ID` | the project the fleet lives in |
+| `SCW_DEFAULT_ORGANIZATION_ID` | the organization, which the account guard checks (`accounts` in `Main.lean`) |
+
+**Fleet values** — read by `apply.yml` only, behind `Fleet.lean`'s `fromEnv` secrets. Each is
+read **only when its Scaleway secret is first created**; changing it later does nothing until
+that secret is deleted and recreated. Nothing here is committed.
+
+| Repo secret | Environment name | What · how to make it |
+|---|---|---|
+| `SECRETS_MASTER_KEY` | same | the vault's master key: `openssl rand -hex 32`. **Keep a durable copy** — losing it loses everything the vault holds |
+| `SECRETS_BOOTSTRAP_PASSWORD` | same | the vault's initial `admin` password (used only while that user is absent). Also needed by `scripts/vault-bootstrap.sh` |
+| `LIAISON_ROOT_KEY` | same | the warrant root key, shared by the app (mints) and liaison (verifies): `openssl rand -hex 32` |
+| `APP_SECRETS_PASSWORD` | same | the app's vault password, user `typednotes-app`, ≥ 16 characters: `openssl rand -base64 32`. **Give the same value to `scripts/vault-bootstrap.sh`** |
+| `LIAISON_SECRETS_PASSWORD` | same | liaison's vault password, user `liaison`, ≥ 16 characters. **Same value to `scripts/vault-bootstrap.sh`** |
+| `OAUTH_GITHUB_CLIENT_ID` | `GITHUB_CLIENT_ID` | a [GitHub OAuth App](https://github.com/settings/developers)'s client id: sign-in and the `github` connection. Callback URL `https://<typednotes-app domain>/auth/github/callback` |
+| `OAUTH_GITHUB_CLIENT_SECRET` | `GITHUB_CLIENT_SECRET` | that OAuth App's client secret |
+| `GOOGLE_CLIENT_ID` | same | a Google Cloud OAuth client (type *Web application*, Google Drive API enabled): sign-in and the `gdrive` connection. Authorized redirect URI `https://<typednotes-app domain>/auth/google/callback`. liaison uses it to refresh Drive tokens |
+| `GOOGLE_CLIENT_SECRET` | same | that OAuth client's secret |
+| `DB_INSPECTOR_USERNAME` | same | the DB inspector's basic-auth username — your choice |
+| `DB_INSPECTOR_PASSWORD` | same | the DB inspector's basic-auth password — make it long |
+
+GitHub refuses repository secrets whose names start with `GITHUB_`, so the GitHub OAuth client
+is stored as `OAUTH_GITHUB_CLIENT_*` and `apply.yml` exports it under the names `Fleet.lean`
+reads. The app's domain is only known after the first apply: register the two callback URLs
+then (the provider refuses sign-in until you do; nothing else depends on it).
+
+**Not secrets you set:** the database connection strings and API keys are minted and composed
+by the apply itself, and the vault's service users are created by `scripts/vault-bootstrap.sh`
+(see "Vault service identities") from the values above.
+
+**Safe to delete** if still set: `LIAISON_SECRETS_TOKEN` (replaced by
+`LIAISON_SECRETS_PASSWORD`) and `SCW_DEFAULT_REGION` (the region comes from `in paris`).
+
 ## Deploying
 
 **Before the first apply**, three things exist outside this repo:
@@ -120,20 +166,8 @@ needs `default_project_id`.
    `liaison` `v0.3.0`, `secrets` `v1.2.0`, whose `.sql` files `plan` reads and whose
    `docker-publish.yml` workflows build **the images**. Until a service's tag is pushed, `plan`
    stops with `HTTP 404 — is the tag or commit pushed, and the path right?`.
-2. **The eleven values** behind `Fleet.lean`'s `fromEnv` secrets, read only when each secret is
-   first created. These name variables, never values; nothing secret is committed.
-
-   | Variable | What |
-   |---|---|
-   | `SECRETS_MASTER_KEY` | the vault's master key (`openssl rand -hex 32`). **Keep it durably** — losing it loses the vault's contents |
-   | `SECRETS_BOOTSTRAP_PASSWORD` | the vault's initial `admin` password (read only while that user is absent) |
-   | `LIAISON_ROOT_KEY` | the warrant root key (`openssl rand -hex 32`) |
-   | `APP_SECRETS_PASSWORD` | the app's vault password (user `typednotes-app`; ≥ 16 characters) — see "Vault service identities" |
-   | `LIAISON_SECRETS_PASSWORD` | liaison's vault password (user `liaison`; ≥ 16 characters) |
-   | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | a GitHub OAuth App: sign-in and the `github` connection. Callback `https://<typednotes-app domain>/auth/github/callback` |
-   | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | a Google OAuth web client: sign-in and the `gdrive` connection (Drive API enabled). Callback `https://<typednotes-app domain>/auth/google/callback`. liaison uses it to refresh Drive tokens |
-   | `DB_INSPECTOR_USERNAME` | the DB inspector's basic-auth username — your choice |
-   | `DB_INSPECTOR_PASSWORD` | the DB inspector's basic-auth password — make it long |
+2. **The fifteen secrets** of "Secrets to set" above — the four Scaleway credentials and the
+   eleven values behind `Fleet.lean`'s `fromEnv` secrets.
 
 3. **An empty `secrets-db`.** The vault used to migrate itself with sqlx; the schema is now
    `secrets-history`'s, which will try to create `kv_store`. The existing database already has
@@ -258,15 +292,9 @@ All three declare an `environment: production`; **add required reviewers to that
 Settings → Environments** if you want every apply or destroy to need a second pair of eyes. That
 is the one gate the workflow files cannot enforce for themselves.
 
-Repo secrets needed: `SCW_ACCESS_KEY`, `SCW_SECRET_KEY`, `SCW_DEFAULT_PROJECT_ID` and
-`SCW_DEFAULT_ORGANIZATION_ID` for all three workflows, plus the eleven values behind `Fleet.lean`'s
-`fromEnv` secrets for `apply.yml` only (`SECRETS_MASTER_KEY`, `SECRETS_BOOTSTRAP_PASSWORD`,
-`LIAISON_ROOT_KEY`, `APP_SECRETS_PASSWORD`, `LIAISON_SECRETS_PASSWORD`,
-`OAUTH_GITHUB_CLIENT_ID`, `OAUTH_GITHUB_CLIENT_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`,
-`DB_INSPECTOR_USERNAME`, `DB_INSPECTOR_PASSWORD`), needed only when those secrets are first created.
-GitHub refuses repo secrets whose names start with `GITHUB_`, hence the `OAUTH_` prefix: the
-workflow exports them as `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`. `LIAISON_SECRETS_TOKEN` is no
-longer read and can be deleted. The composed database URLs are never supplied
+Repo secrets needed: the full list, with what each is and how to make it, is
+["Secrets to set"](#secrets-to-set) — the four `SCW_*` credentials for all three workflows, and
+the eleven fleet values for `apply.yml` only. The composed database URLs are never supplied
 here; the engine builds them at apply time.
 
 `SCW_DEFAULT_ORGANIZATION_ID` is what `checkAccounts` uses to establish which Scaleway
