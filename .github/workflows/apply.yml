@@ -141,8 +141,8 @@ jobs:
       # the other `fromEnv` secrets, read the same way. GitHub refuses repo
       # secrets named `GITHUB_*`, so the
       # GitHub OAuth client is stored as `OAUTH_GITHUB_CLIENT_{ID,SECRET}` and
-      # exported under the names `Fleet.lean` reads. The vault passwords must
-      # also be given to `scripts/vault-bootstrap.sh` — see the README.
+      # exported under the names `Fleet.lean` reads. The two vault passwords
+      # go to the vault too, which creates both service users on start.
       #
       # There is deliberately no database credential here. Serverless SQL
       # Database authenticates through IAM, and `apiKeyFor` mints a key at

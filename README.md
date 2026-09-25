@@ -138,10 +138,10 @@ rewrite as a `refresh-secrets:` line (never the value); read them before approvi
 | Repo secret | Environment name | What · how to make it |
 |---|---|---|
 | `SECRETS_MASTER_KEY` | same | the vault's master key: `openssl rand -hex 32`. **Keep a durable copy** — losing it loses everything the vault holds |
-| `SECRETS_BOOTSTRAP_PASSWORD` | same | the vault's initial `admin` password (used only while that user is absent). Also needed by `scripts/vault-bootstrap.sh` |
+| `SECRETS_BOOTSTRAP_PASSWORD` | same | the vault's initial `admin` password, for operators (used only while that user is absent) |
 | `LIAISON_ROOT_KEY` | same | the warrant root key, shared by the app (mints) and liaison (verifies): `openssl rand -hex 32` |
-| `APP_SECRETS_PASSWORD` | same | the app's vault password, user `typednotes-app`, ≥ 16 characters: `openssl rand -base64 32`. **Give the same value to `scripts/vault-bootstrap.sh`** |
-| `LIAISON_SECRETS_PASSWORD` | same | liaison's vault password, user `liaison`, ≥ 16 characters. **Same value to `scripts/vault-bootstrap.sh`** |
+| `APP_SECRETS_PASSWORD` | same | the app's vault password, user `typednotes-app`, ≥ 12 characters: `openssl rand -base64 32`. The vault creates the user with it on start |
+| `LIAISON_SECRETS_PASSWORD` | same | liaison's vault password, user `liaison`, ≥ 12 characters: `openssl rand -base64 32` |
 | `OAUTH_GITHUB_CLIENT_ID` | `GITHUB_CLIENT_ID` | a [GitHub OAuth App](https://github.com/settings/developers)'s client id: sign-in and the `github` connection. Callback URL `https://app.typednotes.com/auth/github/callback` |
 | `OAUTH_GITHUB_CLIENT_SECRET` | `GITHUB_CLIENT_SECRET` | that OAuth App's client secret |
 | `GOOGLE_CLIENT_ID` | same | a Google Cloud OAuth client (type *Web application*, Google Drive API enabled): sign-in and the `gdrive` connection. Authorized redirect URI `https://app.typednotes.com/auth/google/callback`. liaison uses it to refresh Drive tokens |
@@ -164,8 +164,8 @@ reads. The callbacks use the app's custom domain (`appPublicUrl` in `Fleet.lean`
 attach after the first apply — see "Custom domain".
 
 **Not secrets you set:** the database connection strings and API keys are minted and composed
-by the apply itself, and the vault's service users are created by `scripts/vault-bootstrap.sh`
-(see "Vault service identities") from the values above.
+by the apply itself, and the vault creates its service users itself from the values above (see
+"Vault service identities").
 
 **Safe to delete** if still set: `LIAISON_SECRETS_TOKEN` (replaced by
 `LIAISON_SECRETS_PASSWORD`) and `SCW_DEFAULT_REGION` (the region comes from `in paris`).
@@ -176,7 +176,7 @@ by the apply itself, and the vault's service users are created by `scripts/vault
 
 1. **The release tags, pushed** — `infra` `v0.14.0` (then `lake update infra` here and commit
    `lake-manifest.json`), and the services' tags `typednotes` `v0.3.0`, `ledger` `v0.3.0`,
-   `liaison` `v0.4.0`, `secrets` `v1.2.0`, whose `.sql` files `plan` reads and whose
+   `liaison` `v0.4.0`, `secrets` `v1.3.0`, whose `.sql` files `plan` reads and whose
    `docker-publish.yml` workflows build **the images**. Until a service's tag is pushed, `plan`
    stops with `HTTP 404 — is the tag or commit pushed, and the path right?`.
 2. **The twenty-four secrets** of "Secrets to set" above — the four Scaleway credentials and the
@@ -201,7 +201,6 @@ export SECRETS_MASTER_KEY=... SECRETS_BOOTSTRAP_PASSWORD=... LIAISON_ROOT_KEY=..
        DB_INSPECTOR_USERNAME=... DB_INSPECTOR_PASSWORD=...
 lake exe typednotes-infra plan          # read this
 lake exe typednotes-infra apply
-SECRETS_URL=https://<secrets-server domain> scripts/vault-bootstrap.sh   # once; see below
 ```
 
 Then attach the custom domain (next section) and register the callback URLs with GitHub,
@@ -326,24 +325,26 @@ the hour-long token expires (`typednotes/typednotes` `docs/connections.md` §4).
 static `liaison-secrets-token`, which expired an hour after it was minted; the next apply deletes
 that secret.
 
-The users live in the vault, not in Scaleway, so they are created once — after the vault is up
-(`secrets` ≥ 1.2.0, which adds the users endpoint) — by `scripts/vault-bootstrap.sh`, logged in as
-`admin`:
+The users live in the vault, and the vault creates them itself: `secrets-server` ≥ 1.3.0 reads
+`SECRETS_SERVER_SERVICE_IDENTITIES` (`vaultServiceIdentities` in `Fleet.lean`) and, on **every**
+start, writes a policy named after each user and the user holding only it, with the password from
+the same `app-secrets-password` / `liaison-secrets-password` secrets the two services log in with:
 
 | user | policy on `secret/data/thirdparty/` |
 |---|---|
 | `typednotes-app` | `create`, `delete` — it stores credentials but can never read them back |
-| `liaison` | `read`, plus `create` to write back a refreshed Google token |
+| `liaison` | `read`, plus `create` to write back a refreshed OAuth token |
 
-```
-SECRETS_URL=https://<secrets-server domain> SECRETS_BOOTSTRAP_PASSWORD=... \
-APP_SECRETS_PASSWORD=... LIAISON_SECRETS_PASSWORD=... scripts/vault-bootstrap.sh
-```
+So there is no step after `apply`, and a recreated vault (a new namespace, `destroy --keep-data`)
+comes back with its users. **Rotating** a password is changing the repo secret and applying:
+`--refresh-secrets` rewrites the Scaleway secret and redeploys the vault, the app and liaison with
+it. Tokens issued before keep working until they expire (an hour). The vault refuses to start if
+either password is missing or shorter than 12 characters, which shows as the container failing
+rather than as connections failing to store.
 
-The two passwords must equal the `app-secrets-password` / `liaison-secrets-password` values given to
-`apply`. Re-running the script is safe, and is also how to rotate them — then delete and recreate
-the two Scaleway secrets (secrets are create-only) and redeploy. Until the script has run, the app
-shows connections as failing to store, and liaison answers `credential_unavailable`.
+`admin` is not managed this way: its password is read only while the user is absent, so changing
+`SECRETS_BOOTSTRAP_PASSWORD` does not rotate it — change it in the vault
+(`POST /v1/auth/userpass/users/admin`, logged in as `admin`) and then in the repo secret.
 
 ## CI
 

@@ -186,7 +186,7 @@ def pgUrlWithoutSni {K : ProviderId → Kind → Type} (key : K .scaleway .secre
 def appRelease : String := "0.3.0"
 def ledgerRelease : String := "0.3.0"
 def liaisonRelease : String := "0.4.0"
-def secretsRelease : String := "1.2.0"
+def secretsRelease : String := "1.3.0"
 
 /-- The app's public origin: `app.typednotes.com`, a custom domain attached
     to the `typednotes-app` container by hand (README, "Custom domain") —
@@ -199,6 +199,26 @@ def appImage : String := s!"ghcr.io/typednotes/typednotes:{appRelease}"
 def ledgerImage : String := s!"ghcr.io/typednotes/ledger:{ledgerRelease}"
 def liaisonImage : String := s!"ghcr.io/typednotes/liaison:{liaisonRelease}"
 def secretsImage : String := s!"ghcr.io/typednotes/secrets-server:{secretsRelease}"
+
+/-- The vault's service identities (`typednotes/typednotes`
+    docs/connections.md §4), in the syntax `secrets-server` ≥ 1.3.0 reads
+    from `SECRETS_SERVER_SERVICE_IDENTITIES`. The vault applies them on every
+    start: each gets a policy named after it with exactly these rules, and a
+    user holding only it, whose password is read from `password_env` — the
+    two `*-secrets-password` secrets, which the app and liaison log in with.
+    So nothing has to be created by hand, and rotating a password is an
+    apply: `--refresh-secrets` redeploys the vault and both services with it.
+
+    | user | on `secret/data/thirdparty/` |
+    |---|---|
+    | `typednotes-app` | `create`, `delete` — stores credentials, never reads them back |
+    | `liaison` | `read`, plus `create` to write back a refreshed OAuth token | -/
+def vaultServiceIdentities : String :=
+  let identity (user passwordEnv caps : String) :=
+    s!"\{username=\"{user}\", password_env=\"{passwordEnv}\", " ++
+    s!"rules=[\{prefix=\"secret/data/thirdparty/\", capabilities=[{caps}]}]}"
+  "[" ++ identity "typednotes-app" "APP_SECRETS_PASSWORD" "\"create\",\"delete\"" ++ ", " ++
+    identity "liaison" "LIAISON_SECRETS_PASSWORD" "\"read\",\"create\"" ++ "]"
 
 /-- Each service's migration files, in its repository, at its release tag.
     A new migration is a new line here. -/
@@ -232,9 +252,9 @@ fleet typednotes in paris where
     resource secrets "secrets-master-key" as masterKey
       { valueFrom := fromEnv "SECRETS_MASTER_KEY" }
 
-    -- The password for the vault's initial `admin` user, read by
-    -- `secrets-server` only when that user is absent (so changing it here
-    -- does not rotate it).
+    -- The password for the vault's initial `admin` user, for operators, read
+    -- by `secrets-server` only when that user is absent (so changing it here
+    -- does not rotate it). No service logs in as `admin`.
     resource secrets "secrets-bootstrap-password" as bootstrapPassword
       { valueFrom := fromEnv "SECRETS_BOOTSTRAP_PASSWORD" }
 
@@ -244,12 +264,9 @@ fleet typednotes in paris where
       { valueFrom := fromEnv "LIAISON_ROOT_KEY" }
 
     -- The vault passwords of the two service identities
-    -- (`typednotes/typednotes` docs/connections.md §4): each container logs
-    -- in as its own userpass user and logs in again before the hour-long
-    -- token expires. The users themselves are created in the vault by
-    -- `scripts/vault-bootstrap.sh`, with these same values — see the README.
-    -- This replaces the static `liaison-secrets-token`, which expired an
-    -- hour after it was minted.
+    -- (`vaultServiceIdentities`): each container logs in as its own userpass
+    -- user and logs in again before the hour-long token expires. The vault
+    -- gets the same values and creates or updates both users on every start.
     resource secrets "app-secrets-password" as appSecretsPassword
       { valueFrom := fromEnv "APP_SECRETS_PASSWORD" }
     resource secrets "liaison-secrets-password" as liaisonSecretsPassword
@@ -411,11 +428,17 @@ fleet typednotes in paris where
       -- A username is not a secret; its password partner is below, and
       -- `config.validate()` rejects one without the other. Migrations are
       -- infra's: the server only checks that `kv_store` exists.
+      -- The service identities are plain config naming the env vars their
+      -- passwords are in; those are the same secrets the app and liaison
+      -- log in with, so the two sides cannot drift apart.
       , env        := [ ("SECRETS_SERVER_BOOTSTRAP_USERNAME", "admin")
-                      , ("SECRETS_SERVER_STORAGE_MIGRATE", "false") ]
+                      , ("SECRETS_SERVER_STORAGE_MIGRATE", "false")
+                      , ("SECRETS_SERVER_SERVICE_IDENTITIES", vaultServiceIdentities) ]
       , secretEnv  := [ ("SECRETS_MASTER_KEY", masterKey)
                       , ("SECRETS_SERVER_BOOTSTRAP_PASSWORD", bootstrapPassword)
-                      , ("SECRETS_SERVER_STORAGE_DATABASE_URL", secretsDbUrl) ] }
+                      , ("SECRETS_SERVER_STORAGE_DATABASE_URL", secretsDbUrl)
+                      , ("APP_SECRETS_PASSWORD", appSecretsPassword)
+                      , ("LIAISON_SECRETS_PASSWORD", liaisonSecretsPassword) ] }
 
     -- The Dioxus fullstack app: SSR, the wasm client, the server functions,
     -- the OAuth round trips and the Slack/WhatsApp webhooks, from one binary. `PORT` is set by Scaleway;
@@ -482,9 +505,16 @@ fleet typednotes in paris where
       , image      := liaisonImage
       , port       := 8080
       , migrations := [ledgerHistory, liaisonHistory]
+      -- `SSL_CERT_*`: Lean's static OpenSSL has no trust store of its own
+      -- (the same reason `apply.yml` sets them), so without these every
+      -- HTTPS call liaison makes — the vault, every provider — fails to
+      -- verify. liaison ≥ 0.4.1 bakes them into its image; kept here so the
+      -- fleet does not depend on that.
       , env        := (observedOf secretsServer).map fun vault =>
                         [ ("SECRETS_HOST", vault.url), ("SECRETS_USERNAME", "liaison")
-                        , ("LIAISON_PORT", "8080") ]
+                        , ("LIAISON_PORT", "8080")
+                        , ("SSL_CERT_FILE", "/etc/ssl/certs/ca-certificates.crt")
+                        , ("SSL_CERT_DIR", "/etc/ssl/certs") ]
       , secretEnv  := [ ("LIAISON_ROOT_KEY", liaisonRootKey)
                       , ("DATABASE_URL", appDbUrl)
                       , ("SECRETS_PASSWORD", liaisonSecretsPassword)
@@ -601,6 +631,12 @@ private def fakeEnv : Env typednotes.keys.Key :=
 #guard liaisonImage = "ghcr.io/typednotes/liaison:0.4.0"
 -- No trailing slash: the app appends `/auth/…` to it.
 #guard appPublicUrl = "https://app.typednotes.com"
+-- Exactly what `secrets-server`'s own config test parses.
+#guard vaultServiceIdentities =
+  "[{username=\"typednotes-app\", password_env=\"APP_SECRETS_PASSWORD\", " ++
+  "rules=[{prefix=\"secret/data/thirdparty/\", capabilities=[\"create\",\"delete\"]}]}, " ++
+  "{username=\"liaison\", password_env=\"LIAISON_SECRETS_PASSWORD\", " ++
+  "rules=[{prefix=\"secret/data/thirdparty/\", capabilities=[\"read\",\"create\"]}]}]"
 #guard appMigrations.map (·.source) =
   [ .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.3.0/migrations/0001_core.sql"
   , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.3.0/migrations/0002_sessions_connections.sql"
@@ -608,7 +644,7 @@ private def fakeEnv : Env typednotes.keys.Key :=
 #guard appMigrations.map (·.id) = ["0001", "0002", "0003"]
 #guard ledgerMigrations.map (·.id) = ["0001", "0002"]
 #guard secretsMigrations.map (·.source) =
-  [.url "https://raw.githubusercontent.com/typednotes/secrets/v1.2.0/crates/secrets-storage-postgres/src/migrations/0001_init.sql"]
+  [.url "https://raw.githubusercontent.com/typednotes/secrets/v1.3.0/crates/secrets-storage-postgres/src/migrations/0001_init.sql"]
 
 /- The order a first apply runs in, pinned offline. `runsBefore` reads the
    *scheduled* order, not the declaration order, and a missing slot answers
