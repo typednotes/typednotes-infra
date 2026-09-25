@@ -20,13 +20,26 @@ name: Destroy
 # `Infra/Cli.lean`), not a second teardown mechanism — it deletes everything
 # in the account carrying this fleet's marker, in dependency order, and needs no
 # `SECRETS_MASTER_KEY` since it never creates a secret.
+#
+# **The databases and buckets are kept by default** (`--keep-data`, infra >=
+# 0.18.0): both Serverless SQL databases, their migration histories and the
+# buckets stay standing, still marked as this fleet's, so the next `apply.yml`
+# run picks them up with their data and rebuilds everything else around them
+# — new identities, new keys, new composed URLs, new containers. Deleting the
+# data too takes both the `destroy_databases` box *and* a longer confirmation
+# text that says so, so neither a stray click nor the usual phrase can do it.
 on:
   workflow_dispatch:
     inputs:
       confirm:
-        description: 'Type "destroy typednotes" to confirm tearing the whole fleet down'
+        description: 'Type "destroy typednotes" (or, with the box below ticked, "destroy typednotes and its data")'
         required: true
         type: string
+      destroy_databases:
+        description: 'Also delete the databases, their migration histories and the buckets — their data is lost'
+        required: false
+        type: boolean
+        default: false
 
 # The same group `apply.yml` uses, so a destroy can never race an apply
 # against the same resources. Queued rather than cancelled: a half-finished
@@ -38,8 +51,16 @@ concurrency:
 jobs:
   destroy:
     runs-on: ubuntu-latest
-    if: inputs.confirm == 'destroy typednotes'
+    if: >-
+      (!inputs.destroy_databases && inputs.confirm == 'destroy typednotes') ||
+      (inputs.destroy_databases && inputs.confirm == 'destroy typednotes and its data')
     environment: production
+    # `--keep-data` unless the box is ticked, then empty. (Not `box && '' ||
+    # '--keep-data'`: `''` is falsy in Actions expressions, so that form is
+    # `--keep-data` always.) Every teardown command below takes it, so the
+    # preview, the teardown and the check cannot disagree.
+    env:
+      KEEP_DATA: ${{ !inputs.destroy_databases && '--keep-data' || '' }}
     steps:
       - uses: actions/checkout@v5
       # Same native FFI dependency set as `apply.yml`, for the same reason:
@@ -92,7 +113,8 @@ jobs:
           echo "All required secrets are present."
 
       # What is about to be deleted, printed before anything is: `plan
-      # --destroy` shows the teardown without doing it.
+      # --destroy` shows the teardown without doing it, and lists what
+      # `--keep-data` leaves standing as `KEEP` lines.
       - name: Preview the teardown
         env:
           SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
@@ -105,7 +127,8 @@ jobs:
           {
             echo '### About to destroy'
             echo '```'
-            lake exe typednotes-infra plan --destroy
+            # shellcheck disable=SC2086 # empty, or one flag
+            lake exe typednotes-infra plan --destroy $KEEP_DATA
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
@@ -118,10 +141,11 @@ jobs:
           SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
           SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
           SCW_DEFAULT_ORGANIZATION_ID: ${{ secrets.SCW_DEFAULT_ORGANIZATION_ID }}
-        run: lake exe typednotes-infra destroy
+        run: lake exe typednotes-infra destroy $KEEP_DATA
 
       # A clean teardown leaves nothing left to tear down, so this should
-      # print "nothing to do". If it does not, the log says what is still
+      # print "nothing to do" — after one `KEEP` line per database, history
+      # and bucket, unless the box was ticked. If it does not, the log says what is still
       # standing instead of leaving it to be discovered later.
       - name: Verify nothing is left
         env:
@@ -135,6 +159,7 @@ jobs:
           {
             echo '### State after destroy'
             echo '```'
-            lake exe typednotes-infra plan --destroy
+            # shellcheck disable=SC2086 # empty, or one flag
+            lake exe typednotes-infra plan --destroy $KEEP_DATA
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"

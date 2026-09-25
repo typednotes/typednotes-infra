@@ -127,9 +127,13 @@ anything, and names any that are missing.
 | `SCW_DEFAULT_PROJECT_ID` | the project the fleet lives in |
 | `SCW_DEFAULT_ORGANIZATION_ID` | the organization, which the account guard checks (`accounts` in `Main.lean`) |
 
-**Fleet values** — read by `apply.yml` only, behind `Fleet.lean`'s `fromEnv` secrets. Each is
-read **only when its Scaleway secret is first created**; changing it later does nothing until
-that secret is deleted and recreated. Nothing here is committed.
+**Fleet values** — read by `apply.yml` only, behind `Fleet.lean`'s `fromEnv` secrets. Since
+`apply.yml` passes `--refresh-secrets` (infra ≥ 0.18.0), each is **compared with its Scaleway
+secret on every apply** and written there if it differs — and every container holding a copy is
+updated. So these repo secrets are the source of truth: changing one here changes it in the cloud
+on the next apply, and a value set by hand in Scaleway is overwritten. The plan lists every such
+rewrite as a `refresh-secrets:` line (never the value); read them before approving, above all for
+`SECRETS_MASTER_KEY`. Nothing here is committed.
 
 | Repo secret | Environment name | What · how to make it |
 |---|---|---|
@@ -329,15 +333,21 @@ to the run summary on pushes to `main`. It never applies.
 
 **`apply.yml`** is the manual apply. Its only trigger is `workflow_dispatch` — there is no push
 trigger to mis-condition — and it asks you to type `typednotes` to confirm. It runs the offline
-checks, prints the plan it is about to apply, applies via `lake script run apply --yes`, then
-prints the state afterwards (a clean apply leaves `nothing to do`). Concurrent runs queue rather
-than race.
+checks, prints the plan it is about to apply, applies via `lake script run apply --yes
+--refresh-secrets`, then prints the state afterwards (a clean apply leaves `nothing to do`). All
+three use `--refresh-secrets`, so a stale secret shows in the plan, is rewritten by the apply, and
+is checked by the last step. The three minted database keys are not rotated by it: delete a key's
+secret and apply to rotate one. Concurrent runs queue rather than race.
 
 **`destroy.yml`** is the manual teardown — `apply` against an empty declaration, in `infra`'s own
 terms. Also `workflow_dispatch`-only, and its confirmation phrase is `destroy typednotes` rather
-than `typednotes`, so it cannot be triggered by muscle memory from running `apply`. It prints what
-is about to be deleted (`plan --destroy`), destroys, then prints the teardown plan again (a clean
-teardown leaves `nothing to do`). It shares `apply.yml`'s concurrency group, so the two can never
+than `typednotes`, so it cannot be triggered by muscle memory from running `apply`. **By default it
+keeps the data** (`destroy --keep-data`): both databases, their migration histories and the buckets
+stay, still marked as this fleet's, and the next `apply.yml` rebuilds everything else around them.
+Deleting them too takes the `destroy_databases` box *and* the phrase `destroy typednotes and its
+data`. It prints what is about to be deleted (`plan --destroy`, with a `KEEP` line for each kept
+resource), destroys, then prints the teardown plan again (a clean teardown leaves `nothing to
+do`). It shares `apply.yml`'s concurrency group, so the two can never
 race the same resources, and does not need `SECRETS_MASTER_KEY` since destroying never creates
 a secret. Deleting the minted API key needs no credential of its own: deleting the secret deletes
 the key.

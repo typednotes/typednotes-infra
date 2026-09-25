@@ -144,7 +144,7 @@ package «typednotes-infra» where
 -- breaking change in the front end arrives here unannounced, in whatever
 -- state it happens to be in. Moving forward is a deliberate edit: bump this,
 -- run `lake update infra`, and read the library's CHANGELOG on the way.
-require infra from git "https://github.com/typednotes/infra" @ "v0.17.3"
+require infra from git "https://github.com/typednotes/infra" @ "v0.18.0"
 
 
 @[default_target]
@@ -192,6 +192,11 @@ script plan (_args) do
     manually dispatched workflow and never from a push; see
     `.github/workflows/apply.yml`.
 
+    Every other argument is passed to `apply` — `--refresh-secrets`, which
+    CI always passes, and `--force` — so the flags keep the meaning `infra`
+    gives them, and a typo is `infra`'s usage error rather than silently
+    dropped here.
+
     Output is streamed rather than captured, because an apply can take minutes
     and a CI log that stays empty until the end is unreadable — and if it
     fails partway, what already happened is the important part. -/
@@ -204,5 +209,5 @@ script apply args do
     IO.eprintln "  Then, deliberately:     lake script run apply --yes"
     return 1
   let child ← IO.Process.spawn
-    { cmd := "lake", args := #["exe", "typednotes-infra", "apply"] }
+    { cmd := "lake", args := #["exe", "typednotes-infra", "apply"] ++ (args.filter (· != "--yes")).toArray }
   return (← child.wait)
