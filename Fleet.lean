@@ -183,9 +183,9 @@ def pgUrlWithoutSni {K : ProviderId → Kind → Type} (key : K .scaleway .secre
 /-- One release per service: the image tag, and — prefixed with `v` — the
     git tag its migrations are read at. Bump one of these to release that
     service (after its tag and image are published). -/
-def appRelease : String := "0.3.0"
+def appRelease : String := "0.3.1"
 def ledgerRelease : String := "0.3.0"
-def liaisonRelease : String := "0.4.0"
+def liaisonRelease : String := "0.4.1"
 def secretsRelease : String := "1.3.0"
 
 /-- The app's public origin: `app.typednotes.com`, a custom domain attached
@@ -627,8 +627,8 @@ private def fakeEnv : Env typednotes.keys.Key :=
 
 -- Each service's image and SQL come from the same release (both are built
 -- from one value; this pins the spelling of the result).
-#guard appImage = "ghcr.io/typednotes/typednotes:0.3.0"
-#guard liaisonImage = "ghcr.io/typednotes/liaison:0.4.0"
+#guard appImage = "ghcr.io/typednotes/typednotes:0.3.1"
+#guard liaisonImage = "ghcr.io/typednotes/liaison:0.4.1"
 -- No trailing slash: the app appends `/auth/…` to it.
 #guard appPublicUrl = "https://app.typednotes.com"
 -- Exactly what `secrets-server`'s own config test parses.
@@ -638,9 +638,9 @@ private def fakeEnv : Env typednotes.keys.Key :=
   "{username=\"liaison\", password_env=\"LIAISON_SECRETS_PASSWORD\", " ++
   "rules=[{prefix=\"secret/data/thirdparty/\", capabilities=[\"read\",\"create\"]}]}]"
 #guard appMigrations.map (·.source) =
-  [ .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.3.0/migrations/0001_core.sql"
-  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.3.0/migrations/0002_sessions_connections.sql"
-  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.3.0/migrations/0003_projects_channels.sql" ]
+  [ .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.3.1/migrations/0001_core.sql"
+  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.3.1/migrations/0002_sessions_connections.sql"
+  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.3.1/migrations/0003_projects_channels.sql" ]
 #guard appMigrations.map (·.id) = ["0001", "0002", "0003"]
 #guard ledgerMigrations.map (·.id) = ["0001", "0002"]
 #guard secretsMigrations.map (·.source) =
