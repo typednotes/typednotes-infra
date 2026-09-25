@@ -85,11 +85,16 @@ import Infra
   created. **Verify on the first apply** (see the README): that is a provider
   fact no live run has exercised yet.
 
-  **Composed URLs are create-only.** No cloud reports a secret's value, so a
-  composed URL is built once, at creation, and never diffed. That is why the
-  runtime URL for the vault is `secrets-db-runtime-url` and not the old
-  `secrets-db-url`: reusing the name would have kept the old value, pointing
-  at the retired `secrets-db-app` identity.
+  **Composed URLs are create-only — except under `--refresh-secrets`.** No
+  cloud reports a secret's value, so a composed URL is built once, at
+  creation, and a plain `plan` never diffs it. That is why the runtime URL for
+  the vault is `secrets-db-runtime-url` and not the old `secrets-db-url`:
+  before infra 0.18.0, reusing the name would have kept the old value,
+  pointing at the retired `secrets-db-app` identity. `apply.yml` now passes
+  `--refresh-secrets`, which compares each URL with its recipe settled now and
+  rewrites it — and the containers holding it — if they differ; the same goes
+  for every `fromEnv` secret against its repo secret. The three minted keys
+  are not rotated by it (infra's `docs/coverage.md`).
 
   **Removing a line destroys the resource, from any machine** (infra ≥
   0.15.0): what this fleet manages is whatever carries its marker

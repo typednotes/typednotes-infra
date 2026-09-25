@@ -68,8 +68,9 @@ jobs:
       #
       # Not redundant with `infra`'s own credential error. The `SECRETS_*`
       # value is not a deploy credential — they are the values behind `Fleet.lean`'s
-      # `fromEnv` secrets, read by the Scaleway backend at the moment each
-      # secret is *created*. A missing one therefore fails partway through,
+      # `fromEnv` secrets, read when each secret is *created* and, under
+      # `--refresh-secrets`, compared on every run. A missing one fails partway
+      # through,
       # after the database already exists, leaving a half-applied fleet to
       # clean up by hand. Checking here turns that into a five-second failure
       # that names the variable.
@@ -129,8 +130,7 @@ jobs:
       # declares into, so no AWS secrets are needed or read.
       #
       # `SECRETS_MASTER_KEY` and `SECRETS_BOOTSTRAP_PASSWORD` are the values
-      # the two `fromEnv` secrets in `Fleet.lean` read, and are *only* needed
-      # the first time each of those secrets is created. The second is the
+      # the two `fromEnv` secrets in `Fleet.lean` read. The second is the
       # password for the server's initial `admin` user: without it the
       # container starts with no users and nothing can log in.
       #
@@ -138,8 +138,8 @@ jobs:
       # client values (GitHub, Google, GitLab, Dropbox, Slack), the Slack
       # signing secret, the two WhatsApp webhook values,
       # `DB_INSPECTOR_USERNAME` and `DB_INSPECTOR_PASSWORD` are
-      # the other `fromEnv` secrets, read the same way — only when each is
-      # first created. GitHub refuses repo secrets named `GITHUB_*`, so the
+      # the other `fromEnv` secrets, read the same way. GitHub refuses repo
+      # secrets named `GITHUB_*`, so the
       # GitHub OAuth client is stored as `OAUTH_GITHUB_CLIENT_{ID,SECRET}` and
       # exported under the names `Fleet.lean` reads. The vault passwords must
       # also be given to `scripts/vault-bootstrap.sh` — see the README.
@@ -150,12 +150,45 @@ jobs:
       # (migrator, observer, runtime) — so no credential exists outside the
       # cloud, and the six composed database URLs are built by the engine and
       # never supplied here.
+      #
+      # `--refresh-secrets` (infra >= 0.18.0), on the plan, the apply and the
+      # convergence check alike: every `fromEnv` secret is compared with the
+      # repo secret above and every composed URL with its recipe, and the ones
+      # that differ are rewritten — then every container holding a copy is
+      # updated. So **these repo secrets are the source of truth on every
+      # apply**, not only at creation: changing one here changes it in the
+      # cloud on the next apply, and a value set by hand in Scaleway is
+      # overwritten. That includes `SECRETS_MASTER_KEY`, which encrypts the
+      # vault: check the plan's `refresh-secrets:` lines before approving.
+      # Hence the variables on all three steps — comparing needs the values.
+      # The minted database keys are never rotated by this; see infra's
+      # docs/coverage.md.
       - name: Plan
         env:
           SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
           SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
           SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
           SCW_DEFAULT_ORGANIZATION_ID: ${{ secrets.SCW_DEFAULT_ORGANIZATION_ID }}
+          SECRETS_MASTER_KEY: ${{ secrets.SECRETS_MASTER_KEY }}
+          SECRETS_BOOTSTRAP_PASSWORD: ${{ secrets.SECRETS_BOOTSTRAP_PASSWORD }}
+          LIAISON_ROOT_KEY: ${{ secrets.LIAISON_ROOT_KEY }}
+          APP_SECRETS_PASSWORD: ${{ secrets.APP_SECRETS_PASSWORD }}
+          LIAISON_SECRETS_PASSWORD: ${{ secrets.LIAISON_SECRETS_PASSWORD }}
+          GITHUB_CLIENT_ID: ${{ secrets.OAUTH_GITHUB_CLIENT_ID }}
+          GITHUB_CLIENT_SECRET: ${{ secrets.OAUTH_GITHUB_CLIENT_SECRET }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GITLAB_CLIENT_ID: ${{ secrets.GITLAB_CLIENT_ID }}
+          GITLAB_CLIENT_SECRET: ${{ secrets.GITLAB_CLIENT_SECRET }}
+          DROPBOX_CLIENT_ID: ${{ secrets.DROPBOX_CLIENT_ID }}
+          DROPBOX_CLIENT_SECRET: ${{ secrets.DROPBOX_CLIENT_SECRET }}
+          SLACK_CLIENT_ID: ${{ secrets.SLACK_CLIENT_ID }}
+          SLACK_CLIENT_SECRET: ${{ secrets.SLACK_CLIENT_SECRET }}
+          SLACK_SIGNING_SECRET: ${{ secrets.SLACK_SIGNING_SECRET }}
+          WHATSAPP_APP_SECRET: ${{ secrets.WHATSAPP_APP_SECRET }}
+          WHATSAPP_VERIFY_TOKEN: ${{ secrets.WHATSAPP_VERIFY_TOKEN }}
+          DB_INSPECTOR_USERNAME: ${{ secrets.DB_INSPECTOR_USERNAME }}
+          DB_INSPECTOR_PASSWORD: ${{ secrets.DB_INSPECTOR_PASSWORD }}
         run: |
           # `{ … } | tee` exits with tee's status, and Actions' `bash -e` does
           # not set pipefail — so without this a failing `plan` reports green
@@ -166,7 +199,7 @@ jobs:
           {
             echo '### Plan being applied'
             echo '```'
-            lake exe typednotes-infra plan
+            lake exe typednotes-infra plan --refresh-secrets
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
@@ -200,7 +233,7 @@ jobs:
           WHATSAPP_VERIFY_TOKEN: ${{ secrets.WHATSAPP_VERIFY_TOKEN }}
           DB_INSPECTOR_USERNAME: ${{ secrets.DB_INSPECTOR_USERNAME }}
           DB_INSPECTOR_PASSWORD: ${{ secrets.DB_INSPECTOR_PASSWORD }}
-        run: lake script run apply --yes
+        run: lake script run apply --yes --refresh-secrets
 
       # What the account looks like afterwards. A clean apply leaves nothing
       # outstanding, so this should print "nothing to do" — and if it does not,
@@ -212,11 +245,31 @@ jobs:
           SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
           SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
           SCW_DEFAULT_ORGANIZATION_ID: ${{ secrets.SCW_DEFAULT_ORGANIZATION_ID }}
+          SECRETS_MASTER_KEY: ${{ secrets.SECRETS_MASTER_KEY }}
+          SECRETS_BOOTSTRAP_PASSWORD: ${{ secrets.SECRETS_BOOTSTRAP_PASSWORD }}
+          LIAISON_ROOT_KEY: ${{ secrets.LIAISON_ROOT_KEY }}
+          APP_SECRETS_PASSWORD: ${{ secrets.APP_SECRETS_PASSWORD }}
+          LIAISON_SECRETS_PASSWORD: ${{ secrets.LIAISON_SECRETS_PASSWORD }}
+          GITHUB_CLIENT_ID: ${{ secrets.OAUTH_GITHUB_CLIENT_ID }}
+          GITHUB_CLIENT_SECRET: ${{ secrets.OAUTH_GITHUB_CLIENT_SECRET }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GITLAB_CLIENT_ID: ${{ secrets.GITLAB_CLIENT_ID }}
+          GITLAB_CLIENT_SECRET: ${{ secrets.GITLAB_CLIENT_SECRET }}
+          DROPBOX_CLIENT_ID: ${{ secrets.DROPBOX_CLIENT_ID }}
+          DROPBOX_CLIENT_SECRET: ${{ secrets.DROPBOX_CLIENT_SECRET }}
+          SLACK_CLIENT_ID: ${{ secrets.SLACK_CLIENT_ID }}
+          SLACK_CLIENT_SECRET: ${{ secrets.SLACK_CLIENT_SECRET }}
+          SLACK_SIGNING_SECRET: ${{ secrets.SLACK_SIGNING_SECRET }}
+          WHATSAPP_APP_SECRET: ${{ secrets.WHATSAPP_APP_SECRET }}
+          WHATSAPP_VERIFY_TOKEN: ${{ secrets.WHATSAPP_VERIFY_TOKEN }}
+          DB_INSPECTOR_USERNAME: ${{ secrets.DB_INSPECTOR_USERNAME }}
+          DB_INSPECTOR_PASSWORD: ${{ secrets.DB_INSPECTOR_PASSWORD }}
         run: |
           set -o pipefail
           {
             echo '### State after apply'
             echo '```'
-            lake exe typednotes-infra plan
+            lake exe typednotes-infra plan --refresh-secrets
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
