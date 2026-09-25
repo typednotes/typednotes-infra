@@ -209,12 +209,30 @@ done, everything works except sign-in, those connections and inbound messages.
 
 ### Custom domain
 
-The app is served at **`https://app.typednotes.com`**. `infra` has no DNS or container-domain kind
-yet (DNS is under "Not in this version" in its `docs/coverage.md`), so the domain is attached by
-hand with the [`scw` CLI](https://www.scaleway.com/en/cli/) (checked with 2.62). The
-`typednotes.com` zone is in Scaleway Domains & DNS. The same commands serve for the first attach
-and for **re-attaching** (after the container was recreated, or when the binding shows `error`),
-and they are safe to re-run:
+The app is served at **`https://app.typednotes.com`**. `infra` has no DNS, container-domain or
+HTTPS-only setting yet (DNS is under "Not in this version" in its `docs/coverage.md`), so all
+three are set with the [`scw` CLI](https://www.scaleway.com/en/cli/) (checked with 2.62). The
+`typednotes.com` zone is in Scaleway Domains & DNS.
+
+**`scripts/check-domain.sh`** checks the whole path — the container and its `PUBLIC_URL`, the
+CNAME (asked of the zone's own name servers), the domain binding, the TLS certificate (verifies,
+names the host, more than 14 days left), that plain HTTP is redirected, and that
+`/api/health` answers through all of it — and exits non-zero on any problem. With **`--fix`** it
+also repairs what can be repaired from here, in the order below, changing nothing that already
+checks out:
+
+```sh
+scripts/check-domain.sh          # read-only
+scripts/check-domain.sh --fix    # repoint the CNAME, recreate a stale or failed binding, HTTPS-only
+```
+
+Run it after the first apply, after any apply that may have recreated `typednotes-app`, and
+whenever the browser says the site is not secure. It needs `scw`, `jq`, `dig`, `curl` and
+`openssl`.
+
+What it does, step by step, if you would rather do it by hand — the same commands serve for the
+first attach and for **re-attaching** (after the container was recreated, or when the binding
+shows `error`), and they are safe to re-run:
 
 ```sh
 # 1. the app container's id and its Scaleway host (public_endpoint minus https://)
@@ -243,9 +261,20 @@ until [ -z "$(scw container domain list -o json | jq -r '.[] | select(.hostname=
 scw container domain create container-id="$ID" hostname=app.typednotes.com
 scw container domain list container-id="$ID"     # "creating" for a few minutes, then "ready"; on "error", redo 3–5
 curl -sI https://app.typednotes.com | head -1
+
+# 6. HTTPS only: redirect plain HTTP instead of serving the app over it
+scw container container update "$ID" https-connection-only=true
+curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' http://app.typednotes.com/   # "301 https://app.typednotes.com/"
 ```
 
 `scw container domain get <domain-id>` shows the `error_message` of a failed binding.
+
+**Why step 6 matters.** Without it the container answers `http://app.typednotes.com` with the
+app itself (`200`), unencrypted, and the browser marks the site "Not secure" — for anyone who
+typed the address, followed an old link or a bookmark — even though the certificate is fine.
+With it, Serverless Containers answers plain HTTP with `301` to the `https://` URL. The API
+reads the setting back as `null` even when it is on, so check the behaviour (the `curl` above,
+or the script), not the field.
 
 Then register the callbacks — `https://app.typednotes.com/auth/{github,google,gitlab,dropbox,slack}/callback`
 in each provider's app — and the webhooks: `https://app.typednotes.com/hooks/slack` as the Slack
@@ -262,12 +291,15 @@ How this sits next to the fleet:
   nothing else does. To serve somewhere else, change `appPublicUrl`: `env` is compared on apply,
   so that alone redeploys the app.
 - **Infra leaves it alone.** It lists neither DNS records nor container domains, so no `plan` or
-  `apply` touches or reports them.
+  `apply` touches or reports them. HTTPS-only is a field of the container itself that `infra` does
+  not know about; whether an update of the container keeps it has not been confirmed, so run
+  `scripts/check-domain.sh` after an apply that updated `typednotes-app`.
 - **Updates keep it.** Releases update the container in place and keep its id, so the binding
   survives image bumps.
 - **A recreated container loses it.** If `typednotes-app` is ever destroyed and created again (a
   `destroy`, or a change `infra` can only apply by replacement), its id and Scaleway domain
-  change. Re-run the commands above: step 2 repoints the record, step 4 drops the stale binding.
+  change. Run `scripts/check-domain.sh --fix` (or the commands above: step 2 repoints the record,
+  step 4 drops the stale binding, step 6 turns HTTPS-only back on).
 
 ### What the first live apply confirmed (2026-09-23)
 
