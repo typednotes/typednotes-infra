@@ -212,20 +212,41 @@ done, everything works except sign-in, those connections and inbound messages.
 
 The app is served at **`https://app.typednotes.com`**. `infra` has no DNS or container-domain kind
 yet (DNS is under "Not in this version" in its `docs/coverage.md`), so the domain is attached by
-hand, once, with the [`scw` CLI](https://www.scaleway.com/en/cli/). The `typednotes.com` zone is in
-Scaleway Domains & DNS:
+hand with the [`scw` CLI](https://www.scaleway.com/en/cli/) (checked with 2.62). The
+`typednotes.com` zone is in Scaleway Domains & DNS. The same commands serve for the first attach
+and for **re-attaching** (after the container was recreated, or when the binding shows `error`),
+and they are safe to re-run:
 
 ```sh
-# the app container's id and its Scaleway domain (after the first apply)
-scw container container list name=typednotes-app -o json | jq -r '.[0] | .id, .domain_name'
+# 1. the app container's id and its Scaleway host (public_endpoint minus https://)
+ID=$(scw container container list name=typednotes-app -o json \
+       | jq -r '.[] | select(.name=="typednotes-app") | .id')
+HOST=$(scw container container get "$ID" -o json | jq -r '.public_endpoint | sub("^https://"; "")')
+echo "$ID $HOST"
 
-# point app.typednotes.com at it — a CNAME, hence a subdomain, not the bare typednotes.com
-scw dns record add typednotes.com name=app type=CNAME data=<domain_name>. ttl=300
+# 2. point app.typednotes.com at it — a CNAME, hence a subdomain, not the bare typednotes.com.
+#    `set` creates the record or replaces what it held (e.g. a previous container's host).
+scw dns record set typednotes.com name=app type=CNAME values.0="$HOST." ttl=300
 
-# tell Serverless Containers to answer for it; Scaleway issues the TLS certificate
-scw container domain create container-id=<id> hostname=app.typednotes.com
-scw container domain list container-id=<id>     # wait for status "ready"
+# 3. wait until DNS answers with that host. Do not skip: binding the domain before the CNAME
+#    resolves makes certificate issuance fail, and the binding stays in "error".
+dig +short app.typednotes.com CNAME      # must print "$HOST."
+
+# 4. remove any existing binding for the hostname — a stale one from a previous container, or
+#    one in "error". A failed binding is not retried: it has to be deleted and created again.
+scw container domain list -o json \
+  | jq -r '.[] | select(.hostname=="app.typednotes.com") | .id' \
+  | xargs -r -n1 scw container domain delete
+#    deletion is asynchronous ("deleting"); creating before it is gone fails with "already exists"
+until [ -z "$(scw container domain list -o json | jq -r '.[] | select(.hostname=="app.typednotes.com") | .id')" ]; do sleep 5; done
+
+# 5. tell Serverless Containers to answer for it; Scaleway issues the TLS certificate
+scw container domain create container-id="$ID" hostname=app.typednotes.com
+scw container domain list container-id="$ID"     # "creating" for a few minutes, then "ready"; on "error", redo 3–5
+curl -sI https://app.typednotes.com | head -1
 ```
+
+`scw container domain get <domain-id>` shows the `error_message` of a failed binding.
 
 Then register the callbacks — `https://app.typednotes.com/auth/{github,google,gitlab,dropbox,slack}/callback`
 in each provider's app — and the webhooks: `https://app.typednotes.com/hooks/slack` as the Slack
@@ -247,7 +268,7 @@ How this sits next to the fleet:
   survives image bumps.
 - **A recreated container loses it.** If `typednotes-app` is ever destroyed and created again (a
   `destroy`, or a change `infra` can only apply by replacement), its id and Scaleway domain
-  change. Delete the stale domain and record, then re-run the three commands.
+  change. Re-run the commands above: step 2 repoints the record, step 4 drops the stale binding.
 
 ### What the first live apply confirmed (2026-09-23)
 
