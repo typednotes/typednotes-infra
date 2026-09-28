@@ -100,8 +100,8 @@ it the front end took the plan, the placement and the releases as three separate
 nothing stopped a call from handing over one and forgetting another.
 
 `lakefile.lean` therefore requires `infra` at a tag rather than at `main` — currently
-`v0.14.0` (migrations read from URLs and ordered by their SQL, container `migrations` lists, and
-`namePrefixes`; 0.13.0 added the
+`v0.18.1`, which brings linen `v1.6.1` (0.14.0 read migrations from URLs and ordered them by their
+SQL, with container `migrations` lists and `namePrefixes`; 0.13.0 added the
 `postgresMigrations` kind and made `libpq` a link-time dependency, so `libpq`/`pkg-config` must be
 installed wherever this builds). Moving to a later release is a deliberate edit — bump the tag, run `lake update
 infra`, read that release's entry in `infra`'s `CHANGELOG.md` — rather than something that
