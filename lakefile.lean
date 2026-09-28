@@ -144,7 +144,7 @@ package «typednotes-infra» where
 -- breaking change in the front end arrives here unannounced, in whatever
 -- state it happens to be in. Moving forward is a deliberate edit: bump this,
 -- run `lake update infra`, and read the library's CHANGELOG on the way.
-require infra from git "https://github.com/typednotes/infra" @ "v0.18.0"
+require infra from git "https://github.com/typednotes/infra" @ "v0.18.1"
 
 
 @[default_target]
