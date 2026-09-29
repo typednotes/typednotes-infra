@@ -100,7 +100,7 @@ it the front end took the plan, the placement and the releases as three separate
 nothing stopped a call from handing over one and forgetting another.
 
 `lakefile.lean` therefore requires `infra` at a tag rather than at `main` — currently
-`v0.19.1`, with an explicit root dependency on linen `v1.9.0` overriding Infra's older
+`v0.19.1`, with an explicit root dependency on linen `v1.9.1` overriding Infra's older
 transitive pin (0.19.0 lists managed Kubernetes clusters on every run, so
 the Scaleway key needs Kapsule read access — `AllProductsFullAccess` covers it; 0.14.0 read migrations from URLs and ordered them by their
 SQL, with container `migrations` lists and `namePrefixes`; 0.13.0 added the
