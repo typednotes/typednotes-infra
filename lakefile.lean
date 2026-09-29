@@ -17,7 +17,7 @@ open System Lake DSL
   this builds — CI installs `libpq-dev`.
 -/
 
--- ⟪native-link-flags:begin⟫ — copied verbatim from `infra`'s own lakefile (v0.14.0).
+-- ⟪native-link-flags:begin⟫ — copied verbatim from `infra`'s own lakefile (v0.14.0; re-diffed at v0.19.1).
 -- Diff the marked blocks when bumping `infra`; they must stay identical.
 /-- Ask `pkg-config` for a package's flags, degrading to `#[]` when it or the
     package is missing — matching how Linen treats optional native
@@ -144,7 +144,7 @@ package «typednotes-infra» where
 -- breaking change in the front end arrives here unannounced, in whatever
 -- state it happens to be in. Moving forward is a deliberate edit: bump this,
 -- run `lake update infra`, and read the library's CHANGELOG on the way.
-require infra from git "https://github.com/typednotes/infra" @ "v0.18.1"
+require infra from git "https://github.com/typednotes/infra" @ "v0.19.1"
 
 
 @[default_target]
