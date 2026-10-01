@@ -183,7 +183,7 @@ def pgUrlWithoutSni {K : ProviderId → Kind → Type} (key : K .scaleway .secre
 /-- The reviewed schema release per service: prefixed with `v`, this names
     the git tag its migrations are read at. Images track `latest` separately;
     new migration files are adopted explicitly, never inferred from a tag. -/
-def appRelease : String := "0.6.0"
+def appRelease : String := "0.7.1"
 def ledgerRelease : String := "0.3.6"
 def liaisonRelease : String := "0.6.0"
 def secretsRelease : String := "1.3.0"
@@ -659,14 +659,14 @@ private def fakeEnv : Env typednotes.keys.Key :=
   "{prefix=\"secret/data/connector-policy/\", capabilities=[\"read\"]}," ++
   "{prefix=\"secret/data/connector-authority/\", capabilities=[\"read\"]}]}]"
 #guard appMigrations.map (·.source) =
-  [ .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.6.0/migrations/0001_core.sql"
-  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.6.0/migrations/0002_sessions_connections.sql"
-  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.6.0/migrations/0003_projects_channels.sql"
-  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.6.0/migrations/0004_computations.sql"
-  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.6.0/migrations/0005_productivity_connections.sql"
-  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.6.0/migrations/0006_ai_providers.sql"
-  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.6.0/migrations/0007_notebook_contracts.sql"
-  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.6.0/migrations/0008_connector_authority.sql" ]
+  [ .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.7.1/migrations/0001_core.sql"
+  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.7.1/migrations/0002_sessions_connections.sql"
+  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.7.1/migrations/0003_projects_channels.sql"
+  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.7.1/migrations/0004_computations.sql"
+  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.7.1/migrations/0005_productivity_connections.sql"
+  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.7.1/migrations/0006_ai_providers.sql"
+  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.7.1/migrations/0007_notebook_contracts.sql"
+  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.7.1/migrations/0008_connector_authority.sql" ]
 #guard appMigrations.map (·.id) = ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008"]
 #guard ledgerMigrations.map (·.id) = ["0001", "0002"]
 #guard secretsMigrations.map (·.source) =

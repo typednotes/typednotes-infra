@@ -62,13 +62,13 @@ jobs:
     env:
       KEEP_DATA: ${{ !inputs.destroy_databases && '--keep-data' || '' }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7.0.1
       # Same native FFI dependency set as `apply.yml`, for the same reason:
       # `Infra` pulls in all of Linen's `extern_lib`, not just the parts this
       # fleet touches.
       - name: Install native FFI dependencies
         run: sudo apt-get update && sudo apt-get install -y libpq-dev libssl-dev libsecret-1-dev pkg-config ca-certificates
-      - uses: leanprover/lean-action@v1
+      - uses: leanprover/lean-action@v1.6.0
       # Lean's toolchain bundles a *static* OpenSSL whose compile-time
       # `OPENSSLDIR` points at whatever machine built it, so on a fresh runner
       # there is no trust store and every certificate fails to verify with
