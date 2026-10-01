@@ -2,7 +2,9 @@ name: Plan
 
 on:
   push:
+    branches: [main]
   pull_request:
+    branches: [main]
   workflow_dispatch:
 
 # Never runs `apply`. This workflow only ever shows what *would*
@@ -33,7 +35,7 @@ jobs:
             if [ -f "$f" ]; then echo "SSL_CERT_FILE=$f" >> "$GITHUB_ENV"; break; fi
           done
           echo "SSL_CERT_DIR=/etc/ssl/certs" >> "$GITHUB_ENV"
-      # Offline, no credentials needed or available. Runs on every push and PR.
+      # Offline, no credentials needed or available. Runs on main and PRs to main.
       - name: Run offline self-checks
         run: lake exe typednotes-infra check
 

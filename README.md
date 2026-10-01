@@ -1,7 +1,7 @@
 # Typednotes Infra Declaration
 
 Real infrastructure, declared as Lean 4 values using
-[`infra`](https://github.com/typednotes/infra) — a Terraform/OpenTofu-style tool where target
+[`infra`](https://github.com/typednotes/infra/tree/main) — a Terraform/OpenTofu-style tool where target
 and observed cloud state are Lean values rather than a bespoke DSL, and dependent types make
 impossible states unrepresentable. This repo is the *consumer*: it declares one project's actual
 fleet. `infra` is the reusable engine, the provider backends, and the `plan`/`apply` machinery.
@@ -15,8 +15,8 @@ unconditionally.
 
 ## What's declared
 
-`Fleet.lean` is the whole declaration: the `typednotes` system of
-[`typednotes/typednotes`](https://github.com/typednotes/typednotes)'s `docs/architecture.md`,
+[`Fleet.lean`](https://github.com/typednotes/typednotes-infra/blob/main/Fleet.lean) is the whole declaration: the `typednotes` system of
+[`typednotes/typednotes`](https://github.com/typednotes/typednotes/tree/main)'s [`docs/architecture.md`](https://github.com/typednotes/typednotes/blob/main/docs/architecture.md),
 as far as it is built — 45 Scaleway resources in one apply.
 
 | Container | What | Database | Image |
@@ -34,7 +34,7 @@ twenty operator-supplied secrets, and **four migration histories**.
 The app's schema is pinned to **0.6.0**, including migrations `0001` through `0008`.
 Its notebook features also need `lode`, `lun`,
 their `LODE_URL`/`LODE_TOKEN` and `LUN_URL`/`LUN_TOKEN` settings, `COMPUTE_DB_URL`,
-and the graph/compute vault policies described in the app's `docs/connections.md`;
+and the graph/compute vault policies described in the app's [`docs/connections.md`](https://github.com/typednotes/typednotes/blob/main/docs/connections.md);
 those are not yet declared by this fleet. Microsoft Calendar and Outlook likewise
 need `MICROSOFT_CLIENT_ID`/`MICROSOFT_CLIENT_SECRET` on both the app and liaison,
 which this fleet does not yet supply. These optional integrations stay disabled
@@ -112,24 +112,24 @@ lake exe typednotes-infra dump   # what the fleet sees in the account, as JSON (
 
 `lake build` only compiles. `plan` and `apply` are `infra`'s, called from here and from CI.
 
-`Main.lean` is one call: it hands `Fleet.lean`'s `typednotes` — the whole declaration, keys,
+[`Main.lean`](https://github.com/typednotes/typednotes-infra/blob/main/Main.lean) is one call: it hands [`Fleet.lean`](https://github.com/typednotes/typednotes-infra/blob/main/Fleet.lean)'s `typednotes` — the whole declaration, keys,
 plan, `in paris` placement and releases in a single value — to `Infra.Cli.run`, together with
 this repo's offline check and the accounts it is for. That shape needs **infra ≥ 0.9.0**; before
 it the front end took the plan, the placement and the releases as three separate arguments, and
 nothing stopped a call from handing over one and forgetting another.
 
-`lakefile.lean` therefore requires `infra` at a tag rather than at `main` — currently
+[`lakefile.lean`](https://github.com/typednotes/typednotes-infra/blob/main/lakefile.lean) therefore requires `infra` at a tag rather than at `main` — currently
 `v0.22.0`, with an explicit root dependency on linen `v1.9.2`, matching Infra's
 transitive pin (0.19.0 lists managed Kubernetes clusters on every run, so
 the Scaleway key needs Kapsule read access — `AllProductsFullAccess` covers it; 0.14.0 read migrations from URLs and ordered them by their
 SQL, with container `migrations` lists and `namePrefixes`; 0.13.0 added the
 `postgresMigrations` kind and made `libpq` a link-time dependency, so `libpq`/`pkg-config` must be
 installed wherever this builds). Moving to a later release is a deliberate edit — bump the tag, run `lake update
-infra`, read that release's entry in `infra`'s `CHANGELOG.md` — rather than something that
+infra`, read that release's entry in `infra`'s [`CHANGELOG.md`](https://github.com/typednotes/infra/blob/main/CHANGELOG.md) — rather than something that
 happens to this repo the next time CI runs.
 
 Credentials come from `infra`'s three-source chain — the Scaleway CLI's own config file, the OS
-keychain, then environment variables (see `infra`'s `docs/authentication.md`). Scaleway also
+keychain, then environment variables (see `infra`'s [`docs/authentication.md`](https://github.com/typednotes/infra/blob/main/docs/authentication.md)). Scaleway also
 needs `default_project_id`.
 
 ## Secrets to set
@@ -232,11 +232,11 @@ done, everything works except sign-in, those connections and inbound messages.
 ### Custom domain
 
 The app is served at **`https://app.typednotes.com`**. `infra` has no DNS, container-domain or
-HTTPS-only setting yet (DNS is under "Not in this version" in its `docs/coverage.md`), so all
+HTTPS-only setting yet (DNS is under "Not in this version" in its [`docs/coverage.md`](https://github.com/typednotes/infra/blob/v0.22.0/docs/coverage.md)), so all
 three are set with the [`scw` CLI](https://www.scaleway.com/en/cli/) (checked with 2.62). The
 `typednotes.com` zone is in Scaleway Domains & DNS.
 
-**`scripts/check-domain.sh`** checks the whole path — the container and its `PUBLIC_URL`, the
+**[`scripts/check-domain.sh`](https://github.com/typednotes/typednotes-infra/blob/main/scripts/check-domain.sh)** checks the whole path — the container and its `PUBLIC_URL`, the
 CNAME (asked of the zone's own name servers), the domain binding, the TLS certificate (verifies,
 names the host, more than 14 days left), that plain HTTP is redirected, and that
 `/api/health` answers through all of it — and exits non-zero on any problem. With **`--fix`** it
@@ -375,7 +375,7 @@ scanned. Drop it from `accounts` if the fleet has nothing left on AWS.
 ### Vault service identities
 
 The app and liaison each log in to the vault as their own `userpass` user and log in again before
-the hour-long token expires (`typednotes/typednotes` `docs/connections.md` §4). That replaces the
+the hour-long token expires (`typednotes/typednotes` [`docs/connections.md`](https://github.com/typednotes/typednotes/blob/main/docs/connections.md) §4). That replaces the
 static `liaison-secrets-token`, which expired an hour after it was minted; the next apply deletes
 that secret.
 
@@ -411,7 +411,7 @@ rather than as connections failing to store.
 
 Three workflows, split so that nothing which changes a cloud can be reached from a commit.
 
-**`plan.yml`** runs `check` on every push and pull request, and additionally posts a live `plan`
+**`plan.yml`** runs `check` on pushes to `main` and pull requests targeting `main`, and additionally posts a live `plan`
 to the run summary on pushes to `main`. It never applies.
 
 **`apply.yml`** is the manual apply. Its only trigger is `workflow_dispatch` — there is no push
@@ -464,11 +464,11 @@ which is after the database already exists, leaving a half-applied fleet.
 Both workflows also point OpenSSL at the runner's CA bundle (`SSL_CERT_FILE`/`SSL_CERT_DIR`).
 Without it, any live call fails with `certificate verify failed`: Lean's toolchain bundles a
 static OpenSSL whose compile-time trust-store path does not exist on a runner. See `infra`'s
-`docs/authentication.md`.
+[`docs/authentication.md`](https://github.com/typednotes/infra/blob/main/docs/authentication.md).
 
 ## Notes
 
-`lakefile.lean` duplicates ~80 lines of platform-conditional link flags from `infra`'s own
-lakefile. That is not an oversight: Lake does not propagate a dependency's `moreLinkArgs` to a
+[`lakefile.lean`](https://github.com/typednotes/typednotes-infra/blob/main/lakefile.lean) duplicates ~80 lines of platform-conditional link flags from `infra`'s own
+[lakefile](https://github.com/typednotes/infra/blob/v0.22.0/lakefile.lean). That is not an oversight: Lake does not propagate a dependency's `moreLinkArgs` to a
 dependent's executable, and a lakefile cannot import a dependency's modules, so the computation
 has to be repeated. Keep the two copies in step.
