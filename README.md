@@ -21,13 +21,13 @@ as far as it is built — 54 Scaleway resources in one apply.
 
 | Container | What | Database | Image |
 |---|---|---|---|
-| `typednotes-app` | the Dioxus fullstack app (`core`: sign-in, users, orgs, projects, connections, messaging webhooks) | `typednotes-db` | `ghcr.io/typednotes/typednotes` |
-| `ledger` | usage ledger — expired-hold sweeper, `/health` | `typednotes-db` | `ghcr.io/typednotes/ledger` |
-| `liaison` | the broker — the egress chokepoint | `typednotes-db` | `ghcr.io/typednotes/liaison` |
-| `secrets-server` | the vault | `secrets-db` | `ghcr.io/typednotes/secrets-server` |
-| `db-inspector` | [pgweb](https://github.com/sosedoff/pgweb): browse and query `typednotes-db`, read-only, password-gated | `typednotes-db` | `docker.io/sosedoff/pgweb:0.17.0` |
-| `lode` | bounded notebook code writer and Lean tooling | repository/workspace | `ghcr.io/typednotes/lode:0.4.2` |
-| `lun` | compiled functions and reactive graph runtime | actor-bound schemas on compute-db | `ghcr.io/typednotes/lun:0.3.0` |
+| `typednotes-app` | the Dioxus fullstack app (`core`: sign-in, users, orgs, projects, connections, messaging webhooks) | `typednotes-db` | `ghcr.io/typednotes/typednotes:latest` |
+| `ledger` | usage ledger — expired-hold sweeper, `/health` | `typednotes-db` | `ghcr.io/typednotes/ledger:latest` |
+| `liaison` | the broker — the egress chokepoint | `typednotes-db` | `ghcr.io/typednotes/liaison:latest` |
+| `secrets-server` | the vault | `secrets-db` | `ghcr.io/typednotes/secrets-server:latest` |
+| `db-inspector` | [pgweb](https://github.com/sosedoff/pgweb): browse and query `typednotes-db`, read-only, password-gated | `typednotes-db` | `docker.io/sosedoff/pgweb:latest` |
+| `lode` | bounded notebook code writer and Lean tooling | repository/workspace | `ghcr.io/typednotes/lode:latest` |
+| `lun` | compiled functions and reactive graph runtime | actor-bound schemas on compute-db | `ghcr.io/typednotes/lun:latest` |
 
 Around them: one container namespace, two Serverless SQL databases, a separate
 classic PostgreSQL compute instance, three IAM identities (migrator / observer /
@@ -71,15 +71,18 @@ secrets-history
 - **An applied migration can't be changed underneath you**: infra compares the SQL at the URL with
   what the database recorded when it applied it, and refuses a mismatch (e.g. a moved tag).
 
-The existing five container images use **`latest` selectors**; notebook workers
-pin Lode `0.4.2` and Lun `0.3.0`. Infra **0.22.1** resolves
+All seven container images use **`latest` selectors**, including Lode, Lun and
+the DB inspector. Infra **0.22.2** resolves
 each image selector to a verified registry manifest digest before a live diff and
 applies that frozen `registry/repository@sha256:…` reference. The next run
 resolves the tag again: new content updates in place, unchanged content
 converges. The cloud's configured image records the digest, with no local state.
 Registry failures stop the run, and offline `check` never contacts a registry.
 An existing tag-only deployment gets one update to establish its digest;
-Scaleway's update API automatically redeploys the changed container.
+Scaleway's update API automatically redeploys the changed container. A published
+image becomes active on the next Apply; pushing a tag alone does not update a
+running Scaleway container. An offline guard checks every container's declared
+image ends in `:latest`.
 
 Each service's **schema release value** (`ledgerRelease := "0.3.6"`, …) still
 names the git tag its SQL is read at. Image tags do not automatically adopt SQL:
@@ -128,7 +131,7 @@ it the front end took the plan, the placement and the releases as three separate
 nothing stopped a call from handing over one and forgetting another.
 
 [`lakefile.lean`](https://github.com/typednotes/typednotes-infra/blob/main/lakefile.lean) therefore requires `infra` at a tag rather than at `main` — currently
-`v0.22.1`, with an explicit root dependency on linen `v1.10.0`, overriding Infra's
+`v0.22.2`, with an explicit root dependency on linen `v1.10.0`, overriding Infra's
 older `v1.9.2` transitive pin (0.19.0 lists managed Kubernetes clusters on every run, so
 the Scaleway key needs Kapsule read access — `AllProductsFullAccess` covers it; 0.14.0 read migrations from URLs and ordered them by their
 SQL, with container `migrations` lists and `namePrefixes`; 0.13.0 added the
@@ -209,7 +212,7 @@ by the apply itself, and the vault creates its service users itself from the val
 
 **Before the first apply**, three things exist outside this repo:
 
-1. **The release tags, pushed** — `infra` `v0.22.1` and linen `v1.10.0` (then
+1. **The release tags, pushed** — `infra` `v0.22.2` and linen `v1.10.0` (then
    `lake update infra linen` here and commit `lake-manifest.json`), and the services' tags
    `typednotes` `v0.7.1`, `ledger` `v0.3.6`, `liaison` `v0.6.0`, `secrets` `v1.3.0`,
    whose `.sql` files `plan` reads and whose `docker-publish.yml` workflows build
@@ -247,7 +250,7 @@ done, everything works except sign-in, those connections and inbound messages.
 ### Custom domain
 
 The app is served at **`https://app.typednotes.com`**. `infra` has no DNS, container-domain or
-HTTPS-only setting yet (DNS is under "Not in this version" in its [`docs/coverage.md`](https://github.com/typednotes/infra/blob/v0.22.1/docs/coverage.md)), so all
+HTTPS-only setting yet (DNS is under "Not in this version" in its [`docs/coverage.md`](https://github.com/typednotes/infra/blob/v0.22.2/docs/coverage.md)), so all
 three are set with the [`scw` CLI](https://www.scaleway.com/en/cli/) (checked with 2.62). The
 `typednotes.com` zone is in Scaleway Domains & DNS.
 
@@ -491,6 +494,6 @@ static OpenSSL whose compile-time trust-store path does not exist on a runner. S
 ## Notes
 
 [`lakefile.lean`](https://github.com/typednotes/typednotes-infra/blob/main/lakefile.lean) duplicates ~80 lines of platform-conditional link flags from `infra`'s own
-[lakefile](https://github.com/typednotes/infra/blob/v0.22.1/lakefile.lean). That is not an oversight: Lake does not propagate a dependency's `moreLinkArgs` to a
+[lakefile](https://github.com/typednotes/infra/blob/v0.22.2/lakefile.lean). That is not an oversight: Lake does not propagate a dependency's `moreLinkArgs` to a
 dependent's executable, and a lakefile cannot import a dependency's modules, so the computation
 has to be repeated. Keep the two copies in step.
