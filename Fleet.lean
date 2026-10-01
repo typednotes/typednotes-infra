@@ -116,8 +116,8 @@ import Fleet.Notebook
   ## Where it is, and the images
 
   `in paris` places the fleet at `fr-par`. Images are pulled straight
-  from public registries; notebook workers use reviewed version selectors and
-  the existing services retain **`latest` selectors**. Infra ≥ 0.22.0 resolves
+  from public registries; all seven containers track **`latest` selectors**.
+  Infra ≥ 0.22.0 resolves
   each selector to a manifest digest before the live diff and deploys that
   frozen content. A moved tag with new content updates; the same digest
   converges. Migration histories independently retain explicit release tags:
@@ -209,8 +209,8 @@ def appImage : String := "ghcr.io/typednotes/typednotes:latest"
 def ledgerImage : String := "ghcr.io/typednotes/ledger:latest"
 def liaisonImage : String := "ghcr.io/typednotes/liaison:latest"
 def secretsImage : String := "ghcr.io/typednotes/secrets-server:latest"
-def lodeImage : String := "ghcr.io/typednotes/lode:0.4.2"
-def lunImage : String := "ghcr.io/typednotes/lun:0.3.0"
+def lodeImage : String := "ghcr.io/typednotes/lode:latest"
+def lunImage : String := "ghcr.io/typednotes/lun:latest"
 
 /-- The vault's service identities (`typednotes/typednotes`
     docs/connections.md §4), in the syntax `secrets-server` ≥ 1.3.0 reads
@@ -393,6 +393,7 @@ fleet typednotes in paris where
 
     -- Serverless SQL authenticates via IAM and cannot create actor roles.
     -- A separate classic instance supplies PostgreSQL CREATE ROLE/SCHEMA.
+    -- Infra ≥ 0.22.2 creates SBS 5K storage; Scaleway rejects the old BSSD type.
     resource postgres "typednotes-compute-db" as computeDb
       { instanceClass        := "db-dev-s"
       , masterUsername       := "typednotes_compute"
@@ -727,9 +728,12 @@ private def fakeEnv : Env typednotes.keys.Key :=
       | _ => false
     | _ => false
 
--- Image selectors track current content; SQL sources below remain versioned.
-#guard appImage = "ghcr.io/typednotes/typednotes:latest"
-#guard liaisonImage = "ghcr.io/typednotes/liaison:latest"
+-- Every declared container tracks latest content, including notebook workers
+-- and the inspector. Inspect the resource specs, not just the image constants.
+#guard (Finite.elems (α := typednotes.keys.Key .scaleway .scalewayContainer)).all fun key =>
+  match typednotes.plan.assign .scaleway .scalewayContainer key with
+  | .present spec => spec.image.asLit.any (·.endsWith ":latest")
+  | _ => false
 -- No trailing slash: the app appends `/auth/…` to it.
 #guard appPublicUrl = "https://app.typednotes.com"
 -- Exactly what `secrets-server`'s own config test parses.
