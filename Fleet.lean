@@ -109,11 +109,11 @@ import Infra
   ## Where it is, and the images
 
   `in paris` places the fleet at `fr-par`. Every image is pulled straight
-  from a public registry and **pinned to a version**: `image` is compared as
-  a string, so a moving tag is invisible to the differ. Each service has one
-  release value below, which names both its image tag and the git tag its
-  SQL is read at — so the image and the schema it expects cannot drift
-  apart, and releasing a service is changing one string.
+  from a public registry using **`latest` selectors**. Infra ≥ 0.22.0 resolves
+  each selector to a manifest digest before the live diff and deploys that
+  frozen content. A moved tag with new content updates; the same digest
+  converges. Migration histories independently retain explicit release tags:
+  adopting new SQL still requires updating its release and file list below.
 -/
 
 open Infra.Core
@@ -180,12 +180,12 @@ def pgUrlWithoutSni {K : ProviderId → Kind → Type} (key : K .scaleway .secre
     (db : K .scaleway .postgres) (dbName : String) : Expr K String :=
   expr!"{pgUrl key db dbName}&options=databaseid%3D{(endpointOf db).map databaseIdOf}"
 
-/-- One release per service: the image tag, and — prefixed with `v` — the
-    git tag its migrations are read at. Bump one of these to release that
-    service (after its tag and image are published). -/
-def appRelease : String := "0.3.2"
-def ledgerRelease : String := "0.3.0"
-def liaisonRelease : String := "0.4.1"
+/-- The reviewed schema release per service: prefixed with `v`, this names
+    the git tag its migrations are read at. Images track `latest` separately;
+    new migration files are adopted explicitly, never inferred from a tag. -/
+def appRelease : String := "0.6.0"
+def ledgerRelease : String := "0.3.6"
+def liaisonRelease : String := "0.6.0"
 def secretsRelease : String := "1.3.0"
 
 /-- The app's public origin: `app.typednotes.com`, a custom domain attached
@@ -195,10 +195,12 @@ def secretsRelease : String := "1.3.0"
     is attached and these callbacks are registered with each OAuth provider. -/
 def appPublicUrl : String := "https://app.typednotes.com"
 
-def appImage : String := s!"ghcr.io/typednotes/typednotes:{appRelease}"
-def ledgerImage : String := s!"ghcr.io/typednotes/ledger:{ledgerRelease}"
-def liaisonImage : String := s!"ghcr.io/typednotes/liaison:{liaisonRelease}"
-def secretsImage : String := s!"ghcr.io/typednotes/secrets-server:{secretsRelease}"
+/-- Live plan/apply resolves these selectors to verified manifest digests,
+    compares content and writes immutable references (infra ≥ 0.22.0). -/
+def appImage : String := "ghcr.io/typednotes/typednotes:latest"
+def ledgerImage : String := "ghcr.io/typednotes/ledger:latest"
+def liaisonImage : String := "ghcr.io/typednotes/liaison:latest"
+def secretsImage : String := "ghcr.io/typednotes/secrets-server:latest"
 
 /-- The vault's service identities (`typednotes/typednotes`
     docs/connections.md §4), in the syntax `secrets-server` ≥ 1.3.0 reads
@@ -212,20 +214,34 @@ def secretsImage : String := s!"ghcr.io/typednotes/secrets-server:{secretsReleas
     | user | on `secret/data/thirdparty/` |
     |---|---|
     | `typednotes-app` | `create`, `delete` — stores credentials, never reads them back |
-    | `liaison` | `read`, plus `create` to write back a refreshed OAuth token | -/
+    | `liaison` | `read`, plus `create` to write back a refreshed OAuth token |
+
+    App and liaison ≥ 0.6.0 also exchange trusted policy documents under
+    `secret/data/connector-policy/` and `secret/data/connector-authority/`:
+    the app creates, updates and deletes them; liaison can only read them. -/
 def vaultServiceIdentities : String :=
-  let identity (user passwordEnv caps : String) :=
+  let rule (pathPrefix caps : String) :=
+    s!"\{prefix=\"{pathPrefix}\", capabilities=[{caps}]}"
+  let identity (user passwordEnv rules : String) :=
     s!"\{username=\"{user}\", password_env=\"{passwordEnv}\", " ++
-    s!"rules=[\{prefix=\"secret/data/thirdparty/\", capabilities=[{caps}]}]}"
-  "[" ++ identity "typednotes-app" "APP_SECRETS_PASSWORD" "\"create\",\"delete\"" ++ ", " ++
-    identity "liaison" "LIAISON_SECRETS_PASSWORD" "\"read\",\"create\"" ++ "]"
+    s!"rules=[{rules}]}"
+  let appRules := rule "secret/data/thirdparty/" "\"create\",\"delete\"" ++ "," ++
+    rule "secret/data/connector-policy/" "\"create\",\"update\",\"delete\"" ++ "," ++
+    rule "secret/data/connector-authority/" "\"create\",\"update\",\"delete\""
+  let liaisonRules := rule "secret/data/thirdparty/" "\"read\",\"create\"" ++ "," ++
+    rule "secret/data/connector-policy/" "\"read\"" ++ "," ++
+    rule "secret/data/connector-authority/" "\"read\""
+  "[" ++ identity "typednotes-app" "APP_SECRETS_PASSWORD" appRules ++ ", " ++
+    identity "liaison" "LIAISON_SECRETS_PASSWORD" liaisonRules ++ "]"
 
 /-- Each service's migration files, in its repository, at its release tag.
     A new migration is a new line here. -/
 def appMigrations : List MigrationDecl :=
   github "typednotes/typednotes" s!"v{appRelease}"
     [ "migrations/0001_core.sql", "migrations/0002_sessions_connections.sql"
-    , "migrations/0003_projects_channels.sql" ]
+    , "migrations/0003_projects_channels.sql", "migrations/0004_computations.sql"
+    , "migrations/0005_productivity_connections.sql", "migrations/0006_ai_providers.sql"
+    , "migrations/0007_notebook_contracts.sql", "migrations/0008_connector_authority.sql" ]
 def ledgerMigrations : List MigrationDecl :=
   github "typednotes/ledger" s!"v{ledgerRelease}"
     ["sql/0001_init.sql", "sql/0002_credit_ledger_idempotency.sql"]
@@ -235,12 +251,12 @@ def secretsMigrations : List MigrationDecl :=
   github "typednotes/secrets" s!"v{secretsRelease}"
     ["crates/secrets-storage-postgres/src/migrations/0001_init.sql"]
 
-/-- pgweb, pinned. Configured entirely through environment variables, which
-    is what a Serverless Container can set (there is no command/args field):
+/-- pgweb, tracking `latest` by digest. Configured entirely through environment
+    variables, which is what a Serverless Container can set (there is no command/args field):
     `PGWEB_DATABASE_URL`, `PGWEB_AUTH_USER`/`PGWEB_AUTH_PASS` for HTTP basic
     auth, and `PGWEB_LOCK_SESSION` — all read by pgweb 0.17's
     `pkg/command/options.go` (checked 2026-09-23). Its image listens on 8081. -/
-def inspectorImage : String := "docker.io/sosedoff/pgweb:0.17.0"
+def inspectorImage : String := "docker.io/sosedoff/pgweb:latest"
 
 fleet typednotes in paris where
   provider scaleway where
@@ -493,7 +509,9 @@ fleet typednotes in paris where
 
     -- The broker. It writes ledger's `credit_holds`/`credit_ledger` as well
     -- as its own `audit_log` — a dependency in its code, not its SQL — so its
-    -- rollout waits for both histories. `SECRETS_HOST` is the vault
+    -- rollout waits for both histories. Core's connector-authority history
+    -- is also a rollout prerequisite for the app/broker 0.6.0 contract.
+    -- `SECRETS_HOST` is the vault
     -- container's own domain, read from what Scaleway reports once it
     -- exists — an ordering edge as well as a value, so `liaison` is always
     -- created after `secrets-server`.
@@ -504,7 +522,7 @@ fleet typednotes in paris where
       { namespace' := ns
       , image      := liaisonImage
       , port       := 8080
-      , migrations := [ledgerHistory, liaisonHistory]
+      , migrations := [coreHistory, ledgerHistory, liaisonHistory]
       -- `SSL_CERT_*`: Lean's static OpenSSL has no trust store of its own
       -- (the same reason `apply.yml` sets them), so without these every
       -- HTTPS call liaison makes — the vault, every provider — fails to
@@ -625,23 +643,31 @@ private def fakeEnv : Env typednotes.keys.Key :=
       | _ => false
     | _ => false
 
--- Each service's image and SQL come from the same release (both are built
--- from one value; this pins the spelling of the result).
-#guard appImage = "ghcr.io/typednotes/typednotes:0.3.2"
-#guard liaisonImage = "ghcr.io/typednotes/liaison:0.4.1"
+-- Image selectors track current content; SQL sources below remain versioned.
+#guard appImage = "ghcr.io/typednotes/typednotes:latest"
+#guard liaisonImage = "ghcr.io/typednotes/liaison:latest"
 -- No trailing slash: the app appends `/auth/…` to it.
 #guard appPublicUrl = "https://app.typednotes.com"
 -- Exactly what `secrets-server`'s own config test parses.
 #guard vaultServiceIdentities =
   "[{username=\"typednotes-app\", password_env=\"APP_SECRETS_PASSWORD\", " ++
-  "rules=[{prefix=\"secret/data/thirdparty/\", capabilities=[\"create\",\"delete\"]}]}, " ++
+  "rules=[{prefix=\"secret/data/thirdparty/\", capabilities=[\"create\",\"delete\"]}," ++
+  "{prefix=\"secret/data/connector-policy/\", capabilities=[\"create\",\"update\",\"delete\"]}," ++
+  "{prefix=\"secret/data/connector-authority/\", capabilities=[\"create\",\"update\",\"delete\"]}]}, " ++
   "{username=\"liaison\", password_env=\"LIAISON_SECRETS_PASSWORD\", " ++
-  "rules=[{prefix=\"secret/data/thirdparty/\", capabilities=[\"read\",\"create\"]}]}]"
+  "rules=[{prefix=\"secret/data/thirdparty/\", capabilities=[\"read\",\"create\"]}," ++
+  "{prefix=\"secret/data/connector-policy/\", capabilities=[\"read\"]}," ++
+  "{prefix=\"secret/data/connector-authority/\", capabilities=[\"read\"]}]}]"
 #guard appMigrations.map (·.source) =
-  [ .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.3.2/migrations/0001_core.sql"
-  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.3.2/migrations/0002_sessions_connections.sql"
-  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.3.2/migrations/0003_projects_channels.sql" ]
-#guard appMigrations.map (·.id) = ["0001", "0002", "0003"]
+  [ .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.6.0/migrations/0001_core.sql"
+  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.6.0/migrations/0002_sessions_connections.sql"
+  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.6.0/migrations/0003_projects_channels.sql"
+  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.6.0/migrations/0004_computations.sql"
+  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.6.0/migrations/0005_productivity_connections.sql"
+  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.6.0/migrations/0006_ai_providers.sql"
+  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.6.0/migrations/0007_notebook_contracts.sql"
+  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.6.0/migrations/0008_connector_authority.sql" ]
+#guard appMigrations.map (·.id) = ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008"]
 #guard ledgerMigrations.map (·.id) = ["0001", "0002"]
 #guard secretsMigrations.map (·.source) =
   [.url "https://raw.githubusercontent.com/typednotes/secrets/v1.3.0/crates/secrets-storage-postgres/src/migrations/0001_init.sql"]
@@ -677,6 +703,7 @@ private def container (n : String) : String := s!"scaleway/scaleway-container/{n
 #guard runsBefore (history "typednotes-liaison-history") (container "liaison")
 -- liaison writes ledger's tables, so it waits for that history too.
 #guard runsBefore (history "typednotes-ledger-history") (container "liaison")
+#guard runsBefore (history "typednotes-core-history") (container "liaison")
 #guard runsBefore (history "typednotes-core-history") (container "db-inspector")
 #guard runsBefore (history "typednotes-ledger-history") (container "db-inspector")
 #guard runsBefore (history "typednotes-liaison-history") (container "db-inspector")

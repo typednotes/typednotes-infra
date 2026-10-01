@@ -31,6 +31,15 @@ Around them: one container namespace, two Serverless SQL databases, three IAM id
 (migrator / observer / runtime) with one minted API key each, seven composed connection strings,
 twenty operator-supplied secrets, and **four migration histories**.
 
+The app's schema is pinned to **0.6.0**, including migrations `0001` through `0008`.
+Its notebook features also need `lode`, `lun`,
+their `LODE_URL`/`LODE_TOKEN` and `LUN_URL`/`LUN_TOKEN` settings, `COMPUTE_DB_URL`,
+and the graph/compute vault policies described in the app's `docs/connections.md`;
+those are not yet declared by this fleet. Microsoft Calendar and Outlook likewise
+need `MICROSOFT_CLIENT_ID`/`MICROSOFT_CLIENT_SECRET` on both the app and liaison,
+which this fleet does not yet supply. These optional integrations stay disabled
+until their configuration is supplied.
+
 ### Schemas are declared resources
 
 No service migrates itself. Each service keeps its migrations as plain `.sql` files in its own
@@ -56,10 +65,20 @@ secrets-history
 - **An applied migration can't be changed underneath you**: infra compares the SQL at the URL with
   what the database recorded when it applied it, and refuses a mismatch (e.g. a moved tag).
 
-Each service has **one release value** in `Fleet.lean` (`ledgerRelease := "0.2.0"`, …) naming both
-its image tag and the git tag its SQL is read at, so code and schema can't drift apart.
-**Releasing a service** = publish its tag and image, bump its release value here, and add any new
-migration file to its list — a diff that shows exactly which SQL will run.
+All five container images use **`latest` selectors**. Infra **0.22.0** resolves
+each selector to a verified registry manifest digest before a live diff and
+applies that frozen `registry/repository@sha256:…` reference. The next run
+resolves the tag again: new content updates in place, unchanged content
+converges. The cloud's configured image records the digest, with no local state.
+Registry failures stop the run, and offline `check` never contacts a registry.
+An existing tag-only deployment gets one update to establish its digest;
+Scaleway's update API automatically redeploys the changed container.
+
+Each service's **schema release value** (`ledgerRelease := "0.3.6"`, …) still
+names the git tag its SQL is read at. Image tags do not automatically adopt SQL:
+after publishing a release with migrations, update that release value and add
+the new migration files here before deploying code that needs them. This keeps
+the schema change explicit in the plan while images track current content.
 
 Because the SQL is fetched at `plan`, the offline `check` verifies the declaration's shape (ids,
 `https://` URLs) but not the SQL's content or the order it implies — it says so when it runs.
@@ -100,7 +119,7 @@ it the front end took the plan, the placement and the releases as three separate
 nothing stopped a call from handing over one and forgetting another.
 
 `lakefile.lean` therefore requires `infra` at a tag rather than at `main` — currently
-`v0.19.1`, with an explicit root dependency on linen `v1.9.2` overriding Infra's older
+`v0.22.0`, with an explicit root dependency on linen `v1.9.2`, matching Infra's
 transitive pin (0.19.0 lists managed Kubernetes clusters on every run, so
 the Scaleway key needs Kapsule read access — `AllProductsFullAccess` covers it; 0.14.0 read migrations from URLs and ordered them by their
 SQL, with container `migrations` lists and `namePrefixes`; 0.13.0 added the
@@ -176,10 +195,11 @@ by the apply itself, and the vault creates its service users itself from the val
 
 **Before the first apply**, three things exist outside this repo:
 
-1. **The release tags, pushed** — `infra` `v0.14.0` (then `lake update infra` here and commit
-   `lake-manifest.json`), and the services' tags `typednotes` `v0.3.0`, `ledger` `v0.3.0`,
-   `liaison` `v0.4.0`, `secrets` `v1.3.0`, whose `.sql` files `plan` reads and whose
-   `docker-publish.yml` workflows build **the images**. Until a service's tag is pushed, `plan`
+1. **The release tags, pushed** — `infra` `v0.22.0` and linen `v1.9.2` (then
+   `lake update infra linen` here and commit `lake-manifest.json`), and the services' tags
+   `typednotes` `v0.6.0`, `ledger` `v0.3.6`, `liaison` `v0.6.0`, `secrets` `v1.3.0`,
+   whose `.sql` files `plan` reads and whose `docker-publish.yml` workflows build
+   **the images** and move their `latest` selectors. Until a schema release's tag is pushed, `plan`
    stops with `HTTP 404 — is the tag or commit pushed, and the path right?`.
 2. **The twenty-four secrets** of "Secrets to set" above — the four Scaleway credentials and the
    twenty values behind `Fleet.lean`'s `fromEnv` secrets.
@@ -368,6 +388,13 @@ the same `app-secrets-password` / `liaison-secrets-password` secrets the two ser
 |---|---|
 | `typednotes-app` | `create`, `delete` — it stores credentials but can never read them back |
 | `liaison` | `read`, plus `create` to write back a refreshed OAuth token |
+
+App and liaison ≥ 0.6.0 also require trusted connector policy documents. Under
+`secret/data/connector-policy/` and `secret/data/connector-authority/`, the app gets
+`create`, `update`, `delete`, and liaison gets only `read`. These rules are declared
+alongside the credential rules in `vaultServiceIdentities`, so the vault's next
+rollout installs them before either caller updates. Liaison also waits for the
+core migration history, including `0008_connector_authority.sql`.
 
 So there is no step after `apply`, and a recreated vault (a new namespace, `destroy --keep-data`)
 comes back with its users. **Rotating** a password is changing the repo secret and applying:
