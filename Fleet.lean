@@ -1,4 +1,5 @@
 import Infra
+import Fleet.Notebook
 
 /-
   The declared fleet: everything this project manages.
@@ -14,7 +15,7 @@ import Infra
 
   ## What runs
 
-  Five Serverless Containers in one namespace, over two Serverless SQL
+  Seven Serverless Containers in one namespace, over two Serverless SQL
   databases — `docs/architecture.md` §2 of `typednotes/typednotes`, as far as
   it is built:
 
@@ -25,6 +26,8 @@ import Infra
   | `liaison`        | the broker (egress chokepoint)     | `typednotes-db` |
   | `secrets-server` | the vault                          | `secrets-db`    |
   | `db-inspector`   | pgweb, read-only, password-gated   | `typednotes-db` |
+  | `lode`           | bounded writer and Lean tooling    | repository/workspace |
+  | `lun`            | compiled function/graph runner     | actor schemas in compute-db |
 
   `ledger` and `liaison` share the app's database by design (`ledger.md`:
   "deployed inside core"; `broker.md`: "shares a database with core") — their
@@ -78,12 +81,16 @@ import Infra
   | `typednotes-db-observer`  | `ServerlessSQLDatabaseReadOnly`      | `infra` plan/refresh, pgweb    |
   | `typednotes-db-runtime`   | `ServerlessSQLDatabaseDataReadWrite` | every serving container        |
 
-  So no serving container can change a table's structure, and the DB
+  So no serving container can change the app/vault table structure, and the DB
   inspector cannot change anything. Scaleway's "Known differences" page says
   `GRANT` cannot be performed — access is IAM's, per permission set — which
   is what lets the runtime and observer identities use tables the migrator
   created. **Verify on the first apply** (see the README): that is a provider
   fact no live run has exercised yet.
+
+  Notebook compute uses a separate classic PostgreSQL instance: only the app
+  receives its administrator URL for provisioning actor roles/schemas. Lun
+  receives actor-bound credentials through its scoped vault identity.
 
   **Composed URLs are create-only — except under `--refresh-secrets`.** No
   cloud reports a secret's value, so a composed URL is built once, at
@@ -108,8 +115,9 @@ import Infra
 
   ## Where it is, and the images
 
-  `in paris` places the fleet at `fr-par`. Every image is pulled straight
-  from a public registry using **`latest` selectors**. Infra ≥ 0.22.0 resolves
+  `in paris` places the fleet at `fr-par`. Images are pulled straight
+  from public registries; notebook workers use reviewed version selectors and
+  the existing services retain **`latest` selectors**. Infra ≥ 0.22.0 resolves
   each selector to a manifest digest before the live diff and deploys that
   frozen content. A moved tag with new content updates; the same digest
   converges. Migration histories independently retain explicit release tags:
@@ -201,13 +209,15 @@ def appImage : String := "ghcr.io/typednotes/typednotes:latest"
 def ledgerImage : String := "ghcr.io/typednotes/ledger:latest"
 def liaisonImage : String := "ghcr.io/typednotes/liaison:latest"
 def secretsImage : String := "ghcr.io/typednotes/secrets-server:latest"
+def lodeImage : String := "ghcr.io/typednotes/lode:0.4.2"
+def lunImage : String := "ghcr.io/typednotes/lun:0.3.0"
 
 /-- The vault's service identities (`typednotes/typednotes`
     docs/connections.md §4), in the syntax `secrets-server` ≥ 1.3.0 reads
     from `SECRETS_SERVER_SERVICE_IDENTITIES`. The vault applies them on every
     start: each gets a policy named after it with exactly these rules, and a
     user holding only it, whose password is read from `password_env` — the
-    two `*-secrets-password` secrets, which the app and liaison log in with.
+    service-password secrets, which the app, liaison and Lun log in with.
     So nothing has to be created by hand, and rotating a password is an
     apply: `--refresh-secrets` redeploys the vault and both services with it.
 
@@ -220,19 +230,22 @@ def secretsImage : String := "ghcr.io/typednotes/secrets-server:latest"
     `secret/data/connector-policy/` and `secret/data/connector-authority/`:
     the app creates, updates and deletes them; liaison can only read them. -/
 def vaultServiceIdentities : String :=
-  let rule (pathPrefix caps : String) :=
-    s!"\{prefix=\"{pathPrefix}\", capabilities=[{caps}]}"
   let identity (user passwordEnv rules : String) :=
     s!"\{username=\"{user}\", password_env=\"{passwordEnv}\", " ++
     s!"rules=[{rules}]}"
-  let appRules := rule "secret/data/thirdparty/" "\"create\",\"delete\"" ++ "," ++
-    rule "secret/data/connector-policy/" "\"create\",\"update\",\"delete\"" ++ "," ++
-    rule "secret/data/connector-authority/" "\"create\",\"update\",\"delete\""
-  let liaisonRules := rule "secret/data/thirdparty/" "\"read\",\"create\"" ++ "," ++
-    rule "secret/data/connector-policy/" "\"read\"" ++ "," ++
-    rule "secret/data/connector-authority/" "\"read\""
+  let appRules := Typednotes.Notebook.rules Typednotes.Notebook.appOperations
+  let liaisonRules := "{prefix=\"secret/data/thirdparty/\", capabilities=[\"read\",\"create\"]}," ++
+    "{prefix=\"secret/data/connector-policy/\", capabilities=[\"read\"]}," ++
+    "{prefix=\"secret/data/connector-authority/\", capabilities=[\"read\"]}"
   "[" ++ identity "typednotes-app" "APP_SECRETS_PASSWORD" appRules ++ ", " ++
-    identity "liaison" "LIAISON_SECRETS_PASSWORD" liaisonRules ++ "]"
+    identity "liaison" "LIAISON_SECRETS_PASSWORD" liaisonRules ++ ", " ++
+    identity "lun" "LUN_SECRETS_PASSWORD" (Typednotes.Notebook.rules Typednotes.Notebook.lunOperations) ++ "]"
+
+/-- The administrator is confined to the dedicated compute instance; Lun gets
+    only actor-bound credentials from the vault, never this URL. -/
+def computeUrl {K : ProviderId → Kind → Type} (db : K .scaleway .postgres)
+    (password : K .scaleway .secrets) : Expr K String :=
+  expr!"postgres://typednotes_compute:{(secretValueOf password).map Network.HTTP.Types.urlEncode}@{endpointOf db}/rdb?sslmode=require"
 
 /-- Each service's migration files, in its repository, at its release tag.
     A new migration is a new line here. -/
@@ -287,6 +300,16 @@ fleet typednotes in paris where
       { valueFrom := fromEnv "APP_SECRETS_PASSWORD" }
     resource secrets "liaison-secrets-password" as liaisonSecretsPassword
       { valueFrom := fromEnv "LIAISON_SECRETS_PASSWORD" }
+    resource secrets "lun-secrets-password" as lunSecretsPassword
+      { valueFrom := fromEnv "LUN_SECRETS_PASSWORD" }
+    resource secrets "lode-token" as lodeToken
+      { valueFrom := fromEnv "LODE_TOKEN" }
+    resource secrets "lun-token" as lunToken
+      { valueFrom := fromEnv "LUN_TOKEN" }
+    resource secrets "lun-id-salt" as lunIdSalt
+      { valueFrom := fromEnv "LUN_ID_SALT" }
+    resource secrets "typednotes-compute-password" as computePassword
+      { valueFrom := fromEnv "COMPUTE_DB_PASSWORD" }
 
     -- The OAuth clients behind sign-in and the `github` / `gdrive`
     -- connections. Callback URLs to register with each provider:
@@ -366,7 +389,16 @@ fleet typednotes in paris where
       { masterUsername       := "unused-serverless-sql-is-iam-only"
       , masterPasswordSecret := ""
       , minCapacity          := 0
-      , maxCapacity          := 4 }
+       , maxCapacity          := 4 }
+
+    -- Serverless SQL authenticates via IAM and cannot create actor roles.
+    -- A separate classic instance supplies PostgreSQL CREATE ROLE/SCHEMA.
+    resource postgres "typednotes-compute-db" as computeDb
+      { instanceClass        := "db-dev-s"
+      , masterUsername       := "typednotes_compute"
+      , masterPasswordSecret := "typednotes-compute-password"
+      , version              := "16"
+      , storageGb            := 10 }
 
     -- ── Connection strings, composed at apply ───────────────────────────
     resource secrets "secrets-db-migrator-url" { valueFrom := composed (pgUrl migratorKey secretsDb "secrets-db") }
@@ -379,6 +411,8 @@ fleet typednotes in paris where
       { valueFrom := composed (pgUrl observerKey appDb "typednotes-db") }
     resource secrets "typednotes-db-runtime-url" as appDbUrl
       { valueFrom := composed (pgUrl runtimeKey appDb "typednotes-db") }
+    resource secrets "typednotes-compute-url" as computeDbUrl
+      { valueFrom := composed (computeUrl computeDb computePassword) }
 
     -- The observer's URL again, for pgweb, whose driver sends no SNI: see
     -- `pgUrlWithoutSni`. A separate secret rather than a changed
@@ -453,8 +487,46 @@ fleet typednotes in paris where
       , secretEnv  := [ ("SECRETS_MASTER_KEY", masterKey)
                       , ("SECRETS_SERVER_BOOTSTRAP_PASSWORD", bootstrapPassword)
                       , ("SECRETS_SERVER_STORAGE_DATABASE_URL", secretsDbUrl)
-                      , ("APP_SECRETS_PASSWORD", appSecretsPassword)
-                      , ("LIAISON_SECRETS_PASSWORD", liaisonSecretsPassword) ] }
+                       , ("APP_SECRETS_PASSWORD", appSecretsPassword)
+                       , ("LIAISON_SECRETS_PASSWORD", liaisonSecretsPassword)
+                       , ("LUN_SECRETS_PASSWORD", lunSecretsPassword) ] }
+
+    -- These workers own process-local state. Keep exactly one instance warm;
+    -- their disk is still ephemeral and a rollout invalidates unfinished runs.
+    resource scalewayContainer "lun" as lunContainer
+      { namespace' := ns
+      , image := lunImage
+      , port := 8080
+      , minScale := Typednotes.Notebook.workerCapacity.minScale
+      , maxScale := Typednotes.Notebook.workerCapacity.maxScale
+      , memoryMb := 4096
+      , cpuLimit := 2000
+      , timeoutSec := 900
+      , env := Expr.ap (Expr.map (fun vault broker =>
+          [ ("LUN_PORT", "8080"), ("LUN_LIAISON_URL", s!"https://{broker.url}")
+          , ("SECRETS_HOST", vault.url), ("SECRETS_USERNAME", "lun")
+          , ("SSL_CERT_FILE", "/etc/ssl/certs/ca-certificates.crt")
+          , ("SSL_CERT_DIR", "/etc/ssl/certs") ]) (observedOf secretsServer))
+          (observedOf liaisonContainer)
+      , secretEnv := [("LUN_TOKEN", lunToken), ("LUN_ID_SALT", lunIdSalt),
+          ("SECRETS_PASSWORD", lunSecretsPassword)] }
+
+    resource scalewayContainer "lode" as lodeContainer
+      { namespace' := ns
+      , image := lodeImage
+      , port := 8080
+      , minScale := Typednotes.Notebook.workerCapacity.minScale
+      , maxScale := Typednotes.Notebook.workerCapacity.maxScale
+      , memoryMb := 4096
+      , cpuLimit := 2000
+      , timeoutSec := 900
+      , env := Expr.ap (Expr.map (fun runner broker =>
+          [ ("LODE_PORT", "8080"), ("LODE_LUN_URL", s!"https://{runner.url}")
+          , ("LODE_LIAISON_URL", s!"https://{broker.url}")
+          , ("SSL_CERT_FILE", "/etc/ssl/certs/ca-certificates.crt")
+          , ("SSL_CERT_DIR", "/etc/ssl/certs") ]) (observedOf lunContainer))
+          (observedOf liaisonContainer)
+      , secretEnv := [("LODE_TOKEN", lodeToken), ("LODE_LUN_TOKEN", lunToken)] }
 
     -- The Dioxus fullstack app: SSR, the wasm client, the server functions,
     -- the OAuth round trips and the Slack/WhatsApp webhooks, from one binary. `PORT` is set by Scaleway;
@@ -472,14 +544,22 @@ fleet typednotes in paris where
       , image      := appImage
       , port       := 8080
       , migrations := [coreHistory, ledgerHistory]
-      , env        := Expr.ap (Expr.map (fun vault broker =>
+      , minScale   := Typednotes.Notebook.workerCapacity.minScale
+      , maxScale   := Typednotes.Notebook.workerCapacity.maxScale
+      , timeoutSec := 120
+      , env        := Expr.ap (Expr.ap (Expr.ap (Expr.map (fun vault broker writer runner =>
                         [ ("SECRETS_URL", s!"https://{vault.url}")
                         , ("SECRETS_USERNAME", "typednotes-app")
                         , ("LIAISON_URL", s!"https://{broker.url}")
+                        , ("LODE_URL", s!"https://{writer.url}")
+                        , ("LUN_URL", s!"https://{runner.url}")
                         , ("PUBLIC_URL", appPublicUrl) ])
-                        (observedOf secretsServer))
-                        (observedOf liaisonContainer)
+                        (observedOf secretsServer)) (observedOf liaisonContainer))
+                        (observedOf lodeContainer)) (observedOf lunContainer)
       , secretEnv  := [ ("DATABASE_URL", appDbUrl)
+                       , ("COMPUTE_DB_URL", computeDbUrl)
+                       , ("LODE_TOKEN", lodeToken)
+                       , ("LUN_TOKEN", lunToken)
                       , ("SECRETS_PASSWORD", appSecretsPassword)
                       , ("LIAISON_ROOT_KEY", liaisonRootKey)
                       , ("GITHUB_CLIENT_ID", githubClientId)
@@ -613,9 +693,10 @@ def typednotesBoundary : Boundary :=
 -- `iam` resource to mint against fails here.
 #guard typednotes.keys.count .scaleway .iam = 3
 
--- Four histories, five containers.
+-- Four histories, seven containers and a dedicated classic compute database.
 #guard typednotes.keys.count .scaleway .postgresMigrations = 4
-#guard typednotes.keys.count .scaleway .scalewayContainer = 5
+#guard typednotes.keys.count .scaleway .scalewayContainer = 7
+#guard typednotes.keys.count .scaleway .postgres = 3
 
 /- The inspector's URL, composed against stand-in observed values (the same
    evaluation the apply performs, with real ones): the observer's
@@ -624,13 +705,16 @@ def typednotesBoundary : Boundary :=
    a dry run renders them. -/
 private def fakeEnv : Env typednotes.keys.Key :=
   Env.withRedactedSecrets
-    { observed := fun p k _ =>
+    { observed := fun p k key =>
         match p, k with
         | .scaleway, .postgres => some
             { handle := ⟨"8766c6e0-fc9d-4a6b-901b-b7cc6e3403d8"⟩
               endpoint := "8766c6e0-fc9d-4a6b-901b-b7cc6e3403d8.pg.sdb.fr-par.scw.cloud:5432" }
         | .scaleway, .secrets => some
-            { handle := ⟨"s"⟩, version := "1", accessKey := "SCWXXXX", principal := "app-id" }
+             { handle := ⟨"s"⟩, version := "1", accessKey := "SCWXXXX", principal := "app-id" }
+        | .scaleway, .scalewayContainer => some
+            { handle := ⟨typednotes.keys.name .scaleway .scalewayContainer key⟩
+              url := s!"{typednotes.keys.name .scaleway .scalewayContainer key}.example.invalid" }
         | _, _ => none }
 
 #guard match typednotes.keys.keyOfName? .scaleway .secrets "typednotes-db-pgweb-url" with
@@ -653,11 +737,21 @@ private def fakeEnv : Env typednotes.keys.Key :=
   "[{username=\"typednotes-app\", password_env=\"APP_SECRETS_PASSWORD\", " ++
   "rules=[{prefix=\"secret/data/thirdparty/\", capabilities=[\"create\",\"delete\"]}," ++
   "{prefix=\"secret/data/connector-policy/\", capabilities=[\"create\",\"update\",\"delete\"]}," ++
-  "{prefix=\"secret/data/connector-authority/\", capabilities=[\"create\",\"update\",\"delete\"]}]}, " ++
+  "{prefix=\"secret/data/connector-authority/\", capabilities=[\"create\",\"update\",\"delete\"]}," ++
+  "{prefix=\"secret/data/compute/\", capabilities=[\"create\",\"delete\"]}," ++
+  "{prefix=\"secret/data/graph/\", capabilities=[\"create\",\"delete\"]}]}, " ++
   "{username=\"liaison\", password_env=\"LIAISON_SECRETS_PASSWORD\", " ++
   "rules=[{prefix=\"secret/data/thirdparty/\", capabilities=[\"read\",\"create\"]}," ++
   "{prefix=\"secret/data/connector-policy/\", capabilities=[\"read\"]}," ++
-  "{prefix=\"secret/data/connector-authority/\", capabilities=[\"read\"]}]}]"
+  "{prefix=\"secret/data/connector-authority/\", capabilities=[\"read\"]}]}, " ++
+  "{username=\"lun\", password_env=\"LUN_SECRETS_PASSWORD\", rules=[" ++
+  "{prefix=\"secret/data/connector-policy/\", capabilities=[\"read\"]}," ++
+  "{prefix=\"secret/data/connector-authority/\", capabilities=[\"read\"]}," ++
+  "{prefix=\"secret/data/compute/\", capabilities=[\"read\"]}," ++
+  "{prefix=\"secret/data/graph/\", capabilities=[\"read\",\"create\",\"update\"]}," ++
+  "{prefix=\"secret/metadata/graph/\", capabilities=[\"read\",\"list\"]}," ++
+  "{prefix=\"secret/data/thirdparty/postgres/\", capabilities=[\"read\"]}," ++
+  "{prefix=\"secret/data/thirdparty/vault/\", capabilities=[\"read\"]}]}]"
 #guard appMigrations.map (·.source) =
   [ .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.7.1/migrations/0001_core.sql"
   , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.7.1/migrations/0002_sessions_connections.sql"
@@ -714,3 +808,42 @@ private def container (n : String) : String := s!"scaleway/scaleway-container/{n
 #guard runsBefore (container "secrets-server") (container "typednotes-app")
 #guard runsBefore (container "liaison") (container "typednotes-app")
 #guard runsBefore (history "typednotes-ledger-history") (container "typednotes-app")
+
+-- Real resource references order every writer/runtime dependency before the app.
+#guard runsBefore (container "secrets-server") (container "lun")
+#guard runsBefore (container "liaison") (container "lun")
+#guard runsBefore (container "lun") (container "lode")
+#guard runsBefore (container "liaison") (container "lode")
+#guard runsBefore (container "lode") (container "typednotes-app")
+#guard runsBefore (container "lun") (container "typednotes-app")
+#guard runsBefore "scaleway/postgres/typednotes-compute-db" "scaleway/secrets/typednotes-compute-url"
+#guard runsBefore "scaleway/secrets/typednotes-compute-url" (container "typednotes-app")
+
+private def notebookContainer? (name : String) :
+    Option (ScalewayContainerSpec typednotes.keys.Key Partial (Expr typednotes.keys.Key)) :=
+  match typednotes.keys.keyOfName? .scaleway .scalewayContainer name with
+  | none => none
+  | some key => match typednotes.plan.assign .scaleway .scalewayContainer key with
+    | .present spec => some spec
+    | _ => none
+
+-- These checks inspect the authored fleet, including resolved dependency URLs.
+#guard ["typednotes-app", "lode", "lun"].all fun name =>
+  match notebookContainer? name with
+  | some spec => Expr.eval? fakeEnv (spec.minScale.getD (.lit 0)) == some 1 &&
+      Expr.eval? fakeEnv (spec.maxScale.getD (.lit 0)) == some 1
+  | none => false
+
+#guard match notebookContainer? "typednotes-app" with
+  | some spec => match Expr.eval? fakeEnv (spec.env.getD (.lit [])) with
+    | some env => env.lookup "LODE_URL" == some "https://lode.example.invalid" &&
+        env.lookup "LUN_URL" == some "https://lun.example.invalid"
+    | none => false
+  | none => false
+
+#guard match notebookContainer? "lun" with
+  | some spec => match Expr.eval? fakeEnv (spec.secretEnv.getD (.lit [])) with
+    | some env => !(env.map (·.1)).contains "COMPUTE_DB_URL" &&
+        !(env.map (·.1)).contains "LIAISON_ROOT_KEY"
+    | none => false
+  | none => false

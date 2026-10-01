@@ -89,6 +89,11 @@ jobs:
           LIAISON_ROOT_KEY: ${{ secrets.LIAISON_ROOT_KEY }}
           APP_SECRETS_PASSWORD: ${{ secrets.APP_SECRETS_PASSWORD }}
           LIAISON_SECRETS_PASSWORD: ${{ secrets.LIAISON_SECRETS_PASSWORD }}
+          LUN_SECRETS_PASSWORD: ${{ secrets.LUN_SECRETS_PASSWORD }}
+          LODE_TOKEN: ${{ secrets.LODE_TOKEN }}
+          LUN_TOKEN: ${{ secrets.LUN_TOKEN }}
+          LUN_ID_SALT: ${{ secrets.LUN_ID_SALT }}
+          COMPUTE_DB_PASSWORD: ${{ secrets.COMPUTE_DB_PASSWORD }}
           GITHUB_CLIENT_ID: ${{ secrets.OAUTH_GITHUB_CLIENT_ID }}
           GITHUB_CLIENT_SECRET: ${{ secrets.OAUTH_GITHUB_CLIENT_SECRET }}
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
@@ -109,7 +114,8 @@ jobs:
           for v in SCW_ACCESS_KEY SCW_SECRET_KEY \
                    SCW_DEFAULT_PROJECT_ID SCW_DEFAULT_ORGANIZATION_ID \
                    SECRETS_MASTER_KEY SECRETS_BOOTSTRAP_PASSWORD \
-                   LIAISON_ROOT_KEY APP_SECRETS_PASSWORD LIAISON_SECRETS_PASSWORD \
+                    LIAISON_ROOT_KEY APP_SECRETS_PASSWORD LIAISON_SECRETS_PASSWORD \
+                    LUN_SECRETS_PASSWORD LODE_TOKEN LUN_TOKEN LUN_ID_SALT COMPUTE_DB_PASSWORD \
                    GITHUB_CLIENT_ID GITHUB_CLIENT_SECRET \
                    GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET \
                    GITLAB_CLIENT_ID GITLAB_CLIENT_SECRET \
@@ -125,6 +131,20 @@ jobs:
             exit 1
           fi
           echo "All required secrets are present."
+          # Fail before cloud creation if the RDB password violates its API contract.
+          if [[ ${#COMPUTE_DB_PASSWORD} -lt 8 || ${#COMPUTE_DB_PASSWORD} -gt 128 ||
+                ! "$COMPUTE_DB_PASSWORD" =~ [[:upper:]] || ! "$COMPUTE_DB_PASSWORD" =~ [[:lower:]] ||
+                ! "$COMPUTE_DB_PASSWORD" =~ [[:digit:]] || ! "$COMPUTE_DB_PASSWORD" =~ [^[:alnum:]] ]]; then
+            echo "COMPUTE_DB_PASSWORD must contain 8–128 characters including uppercase, lowercase, a digit and a special character." >&2
+            exit 1
+          fi
+          for v in LODE_TOKEN LUN_TOKEN LUN_ID_SALT LUN_SECRETS_PASSWORD; do
+            value="${!v}"
+            if [[ ${#value} -lt 32 ]]; then
+              echo "$v must contain at least 32 characters." >&2
+              exit 1
+            fi
+          done
 
       # Scaleway only — `Infra.Cli` authenticates just the clouds the fleet
       # declares into, so no AWS secrets are needed or read.
@@ -174,6 +194,11 @@ jobs:
           LIAISON_ROOT_KEY: ${{ secrets.LIAISON_ROOT_KEY }}
           APP_SECRETS_PASSWORD: ${{ secrets.APP_SECRETS_PASSWORD }}
           LIAISON_SECRETS_PASSWORD: ${{ secrets.LIAISON_SECRETS_PASSWORD }}
+          LUN_SECRETS_PASSWORD: ${{ secrets.LUN_SECRETS_PASSWORD }}
+          LODE_TOKEN: ${{ secrets.LODE_TOKEN }}
+          LUN_TOKEN: ${{ secrets.LUN_TOKEN }}
+          LUN_ID_SALT: ${{ secrets.LUN_ID_SALT }}
+          COMPUTE_DB_PASSWORD: ${{ secrets.COMPUTE_DB_PASSWORD }}
           GITHUB_CLIENT_ID: ${{ secrets.OAUTH_GITHUB_CLIENT_ID }}
           GITHUB_CLIENT_SECRET: ${{ secrets.OAUTH_GITHUB_CLIENT_SECRET }}
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
@@ -218,6 +243,11 @@ jobs:
           LIAISON_ROOT_KEY: ${{ secrets.LIAISON_ROOT_KEY }}
           APP_SECRETS_PASSWORD: ${{ secrets.APP_SECRETS_PASSWORD }}
           LIAISON_SECRETS_PASSWORD: ${{ secrets.LIAISON_SECRETS_PASSWORD }}
+          LUN_SECRETS_PASSWORD: ${{ secrets.LUN_SECRETS_PASSWORD }}
+          LODE_TOKEN: ${{ secrets.LODE_TOKEN }}
+          LUN_TOKEN: ${{ secrets.LUN_TOKEN }}
+          LUN_ID_SALT: ${{ secrets.LUN_ID_SALT }}
+          COMPUTE_DB_PASSWORD: ${{ secrets.COMPUTE_DB_PASSWORD }}
           GITHUB_CLIENT_ID: ${{ secrets.OAUTH_GITHUB_CLIENT_ID }}
           GITHUB_CLIENT_SECRET: ${{ secrets.OAUTH_GITHUB_CLIENT_SECRET }}
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
@@ -250,6 +280,11 @@ jobs:
           LIAISON_ROOT_KEY: ${{ secrets.LIAISON_ROOT_KEY }}
           APP_SECRETS_PASSWORD: ${{ secrets.APP_SECRETS_PASSWORD }}
           LIAISON_SECRETS_PASSWORD: ${{ secrets.LIAISON_SECRETS_PASSWORD }}
+          LUN_SECRETS_PASSWORD: ${{ secrets.LUN_SECRETS_PASSWORD }}
+          LODE_TOKEN: ${{ secrets.LODE_TOKEN }}
+          LUN_TOKEN: ${{ secrets.LUN_TOKEN }}
+          LUN_ID_SALT: ${{ secrets.LUN_ID_SALT }}
+          COMPUTE_DB_PASSWORD: ${{ secrets.COMPUTE_DB_PASSWORD }}
           GITHUB_CLIENT_ID: ${{ secrets.OAUTH_GITHUB_CLIENT_ID }}
           GITHUB_CLIENT_SECRET: ${{ secrets.OAUTH_GITHUB_CLIENT_SECRET }}
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}

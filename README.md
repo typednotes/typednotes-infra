@@ -17,7 +17,7 @@ unconditionally.
 
 [`Fleet.lean`](https://github.com/typednotes/typednotes-infra/blob/main/Fleet.lean) is the whole declaration: the `typednotes` system of
 [`typednotes/typednotes`](https://github.com/typednotes/typednotes/tree/main)'s [`docs/architecture.md`](https://github.com/typednotes/typednotes/blob/main/docs/architecture.md),
-as far as it is built — 45 Scaleway resources in one apply.
+as far as it is built — 54 Scaleway resources in one apply.
 
 | Container | What | Database | Image |
 |---|---|---|---|
@@ -26,16 +26,20 @@ as far as it is built — 45 Scaleway resources in one apply.
 | `liaison` | the broker — the egress chokepoint | `typednotes-db` | `ghcr.io/typednotes/liaison` |
 | `secrets-server` | the vault | `secrets-db` | `ghcr.io/typednotes/secrets-server` |
 | `db-inspector` | [pgweb](https://github.com/sosedoff/pgweb): browse and query `typednotes-db`, read-only, password-gated | `typednotes-db` | `docker.io/sosedoff/pgweb:0.17.0` |
+| `lode` | bounded notebook code writer and Lean tooling | repository/workspace | `ghcr.io/typednotes/lode:0.4.2` |
+| `lun` | compiled functions and reactive graph runtime | actor-bound schemas on compute-db | `ghcr.io/typednotes/lun:0.3.0` |
 
-Around them: one container namespace, two Serverless SQL databases, three IAM identities
-(migrator / observer / runtime) with one minted API key each, seven composed connection strings,
-twenty operator-supplied secrets, and **four migration histories**.
+Around them: one container namespace, two Serverless SQL databases, a separate
+classic PostgreSQL compute instance, three IAM identities (migrator / observer /
+runtime) with one minted API key each, eight composed connection strings,
+twenty-five operator-supplied secrets, and **four migration histories**.
 
 The app's schema is read at **0.7.1**, including migrations `0001` through `0008`.
-Its notebook features also need `lode`, `lun`,
-their `LODE_URL`/`LODE_TOKEN` and `LUN_URL`/`LUN_TOKEN` settings, `COMPUTE_DB_URL`,
-and the graph/compute vault policies described in the app's [`docs/connections.md`](https://github.com/typednotes/typednotes/blob/main/docs/connections.md);
-those are not yet declared by this fleet. Microsoft Calendar and Outlook likewise
+The fleet deploys `lode` and `lun`, wires their service URLs and bearer tokens,
+and provisions the separate compute database and bounded graph/compute vault
+policies. App, Lode and Lun stay warm with exactly one instance each; their
+container disks remain ephemeral. See [notebook deployment](https://github.com/typednotes/typednotes-infra/blob/main/docs/notebooks.md)
+for rollout, recovery and the five new required secrets. Microsoft Calendar and Outlook
 need `MICROSOFT_CLIENT_ID`/`MICROSOFT_CLIENT_SECRET` on both the app and liaison,
 which this fleet does not yet supply. These optional integrations stay disabled
 until their configuration is supplied.
@@ -61,12 +65,15 @@ secrets-history
 - **Every rollout waits for the schemas it needs**: each container's `migrations` lists them. liaison
   writes ledger's tables — a dependency in its code, not its SQL — so its container waits for
   ledger's history as well as its own. A failed migration stops the rollout.
-- **No serving identity can edit table structure**: DDL is the migrator's, used only by `apply`.
+- **Application/vault serving identities cannot edit their table structure**:
+  DDL is the migrator's, used only by `apply`. The app's separate compute-only
+  administrator provisions actor roles/schemas on the dedicated compute instance.
 - **An applied migration can't be changed underneath you**: infra compares the SQL at the URL with
   what the database recorded when it applied it, and refuses a mismatch (e.g. a moved tag).
 
-All five container images use **`latest` selectors**. Infra **0.22.0** resolves
-each selector to a verified registry manifest digest before a live diff and
+The existing five container images use **`latest` selectors**; notebook workers
+pin Lode `0.4.2` and Lun `0.3.0`. Infra **0.22.1** resolves
+each image selector to a verified registry manifest digest before a live diff and
 applies that frozen `registry/repository@sha256:…` reference. The next run
 resolves the tag again: new content updates in place, unchanged content
 converges. The cloud's configured image records the digest, with no local state.
@@ -121,7 +128,7 @@ it the front end took the plan, the placement and the releases as three separate
 nothing stopped a call from handing over one and forgetting another.
 
 [`lakefile.lean`](https://github.com/typednotes/typednotes-infra/blob/main/lakefile.lean) therefore requires `infra` at a tag rather than at `main` — currently
-`v0.22.0`, with an explicit root dependency on linen `v1.10.0`, overriding Infra's
+`v0.22.1`, with an explicit root dependency on linen `v1.10.0`, overriding Infra's
 older `v1.9.2` transitive pin (0.19.0 lists managed Kubernetes clusters on every run, so
 the Scaleway key needs Kapsule read access — `AllProductsFullAccess` covers it; 0.14.0 read migrations from URLs and ordered them by their
 SQL, with container `migrations` lists and `namePrefixes`; 0.13.0 added the
@@ -138,7 +145,7 @@ needs `default_project_id`.
 
 Everything this fleet needs from you, in one place. Set each as a **GitHub repository secret**
 (Settings → Secrets and variables → Actions) for CI, or export it under the **environment name**
-for a local `plan`/`apply`. `apply.yml` checks that all twenty-four are non-empty before it touches
+for a local `plan`/`apply`. `apply.yml` checks that all twenty-nine are non-empty before it touches
 anything, and names any that are missing.
 
 **Scaleway credentials** — read by every workflow (`plan.yml`, `apply.yml`, `destroy.yml`):
@@ -165,6 +172,11 @@ rewrite as a `refresh-secrets:` line (never the value); read them before approvi
 | `LIAISON_ROOT_KEY` | same | the warrant root key, shared by the app (mints) and liaison (verifies): `openssl rand -hex 32` |
 | `APP_SECRETS_PASSWORD` | same | the app's vault password, user `typednotes-app`, ≥ 12 characters: `openssl rand -base64 32`. The vault creates the user with it on start |
 | `LIAISON_SECRETS_PASSWORD` | same | liaison's vault password, user `liaison`, ≥ 12 characters: `openssl rand -base64 32` |
+| `LUN_SECRETS_PASSWORD` | same | Lun's separate vault identity password, ≥ 32 random characters |
+| `LODE_TOKEN` | same | writer API bearer token shared with the app: `openssl rand -hex 32` |
+| `LUN_TOKEN` | same | runner API bearer token shared with the app and writer: `openssl rand -hex 32` |
+| `LUN_ID_SALT` | same | stable build-ID salt: `openssl rand -hex 32` |
+| `COMPUTE_DB_PASSWORD` | same | dedicated compute administrator password; 8–128 characters with upper/lowercase, a digit and a special character |
 | `OAUTH_GITHUB_CLIENT_ID` | `GITHUB_CLIENT_ID` | a [GitHub OAuth App](https://github.com/settings/developers)'s client id: sign-in and the `github` connection. Callback URL `https://app.typednotes.com/auth/github/callback` |
 | `OAUTH_GITHUB_CLIENT_SECRET` | `GITHUB_CLIENT_SECRET` | that OAuth App's client secret |
 | `GOOGLE_CLIENT_ID` | same | a Google Cloud OAuth client (type *Web application*, Google Drive API enabled): sign-in and the `gdrive` connection. Authorized redirect URI `https://app.typednotes.com/auth/google/callback`. On the consent screen, declare the scopes `openid`, `email`, `profile` and `…/auth/drive.file` (not the restricted `…/auth/drive`, which Google refuses to unverified apps with `403 access_denied`) and publish it: in *Testing* only listed test users get in, and their refresh tokens expire after 7 days. liaison uses it to refresh Drive tokens |
@@ -197,14 +209,15 @@ by the apply itself, and the vault creates its service users itself from the val
 
 **Before the first apply**, three things exist outside this repo:
 
-1. **The release tags, pushed** — `infra` `v0.22.0` and linen `v1.10.0` (then
+1. **The release tags, pushed** — `infra` `v0.22.1` and linen `v1.10.0` (then
    `lake update infra linen` here and commit `lake-manifest.json`), and the services' tags
    `typednotes` `v0.7.1`, `ledger` `v0.3.6`, `liaison` `v0.6.0`, `secrets` `v1.3.0`,
    whose `.sql` files `plan` reads and whose `docker-publish.yml` workflows build
    **the images** and move their `latest` selectors. Until a schema release's tag is pushed, `plan`
    stops with `HTTP 404 — is the tag or commit pushed, and the path right?`.
-2. **The twenty-four secrets** of "Secrets to set" above — the four Scaleway credentials and the
-   twenty values behind `Fleet.lean`'s `fromEnv` secrets.
+2. **The twenty-nine secrets** of "Secrets to set" above — the four Scaleway credentials and the
+   twenty-five values behind `Fleet.lean`'s `fromEnv` secrets, including the notebook
+   service tokens, Lun identity password, stable ID salt and compute DB password.
 
 3. **An empty `secrets-db`.** The vault used to migrate itself with sqlx; the schema is now
    `secrets-history`'s, which will try to create `kv_store`. The existing database already has
@@ -234,7 +247,7 @@ done, everything works except sign-in, those connections and inbound messages.
 ### Custom domain
 
 The app is served at **`https://app.typednotes.com`**. `infra` has no DNS, container-domain or
-HTTPS-only setting yet (DNS is under "Not in this version" in its [`docs/coverage.md`](https://github.com/typednotes/infra/blob/v0.22.0/docs/coverage.md)), so all
+HTTPS-only setting yet (DNS is under "Not in this version" in its [`docs/coverage.md`](https://github.com/typednotes/infra/blob/v0.22.1/docs/coverage.md)), so all
 three are set with the [`scw` CLI](https://www.scaleway.com/en/cli/) (checked with 2.62). The
 `typednotes.com` zone is in Scaleway Domains & DNS.
 
@@ -376,7 +389,7 @@ scanned. Drop it from `accounts` if the fleet has nothing left on AWS.
 
 ### Vault service identities
 
-The app and liaison each log in to the vault as their own `userpass` user and log in again before
+The app, liaison and Lun each log in to the vault as their own `userpass` user and log in again before
 the hour-long token expires (`typednotes/typednotes` [`docs/connections.md`](https://github.com/typednotes/typednotes/blob/main/docs/connections.md) §4). That replaces the
 static `liaison-secrets-token`, which expired an hour after it was minted; the next apply deletes
 that secret.
@@ -384,12 +397,19 @@ that secret.
 The users live in the vault, and the vault creates them itself: `secrets-server` ≥ 1.3.0 reads
 `SECRETS_SERVER_SERVICE_IDENTITIES` (`vaultServiceIdentities` in `Fleet.lean`) and, on **every**
 start, writes a policy named after each user and the user holding only it, with the password from
-the same `app-secrets-password` / `liaison-secrets-password` secrets the two services log in with:
+the same `app-secrets-password`, `liaison-secrets-password` and `lun-secrets-password` secrets their callers use:
 
 | user | policy on `secret/data/thirdparty/` |
 |---|---|
 | `typednotes-app` | `create`, `delete` — it stores credentials but can never read them back |
 | `liaison` | `read`, plus `create` to write back a refreshed OAuth token |
+
+Lun has no general third-party credential read. Its rules are limited to actor
+compute credentials, graph data/metadata, connector policy/authority and the
+reserved PostgreSQL/vault permission-document namespaces. The app also gets
+create/delete on graph and compute data while retaining no read/list rights.
+The proof-carrying declaration and real vault checks are described in
+[notebook deployment](https://github.com/typednotes/typednotes-infra/blob/main/docs/notebooks.md).
 
 App and liaison ≥ 0.6.0 also require trusted connector policy documents. Under
 `secret/data/connector-policy/` and `secret/data/connector-authority/`, the app gets
@@ -400,9 +420,9 @@ core migration history, including `0008_connector_authority.sql`.
 
 So there is no step after `apply`, and a recreated vault (a new namespace, `destroy --keep-data`)
 comes back with its users. **Rotating** a password is changing the repo secret and applying:
-`--refresh-secrets` rewrites the Scaleway secret and redeploys the vault, the app and liaison with
+`--refresh-secrets` rewrites the Scaleway secret and redeploys the vault and affected callers with
 it. Tokens issued before keep working until they expire (an hour). The vault refuses to start if
-either password is missing or shorter than 12 characters, which shows as the container failing
+any identity password is missing or shorter than 12 characters, which shows as the container failing
 rather than as connections failing to store.
 
 `admin` is not managed this way: its password is read only while the user is absent, so changing
@@ -443,7 +463,7 @@ is the one gate the workflow files cannot enforce for themselves.
 
 Repo secrets needed: the full list, with what each is and how to make it, is
 ["Secrets to set"](#secrets-to-set) — the four `SCW_*` credentials for all three workflows, and
-the twenty fleet values for `apply.yml` only. The composed database URLs are never supplied
+the twenty-five fleet values for `apply.yml` only. The composed database URLs are never supplied
 here; the engine builds them at apply time.
 
 `SCW_DEFAULT_ORGANIZATION_ID` is what `checkAccounts` uses to establish which Scaleway
@@ -458,8 +478,8 @@ secret that was not a secret, and having it there meant CI could quietly run aga
 other than the `fr-par` in the container image's own URL — the account guard checks the
 organization, not the place. The secret can be deleted; leaving it set does nothing.
 
-`apply.yml` checks all twenty-four are non-empty **before** it touches anything, and names the missing
-ones. That matters for the twenty `fromEnv` values in particular: they are not credentials, so
+`apply.yml` checks all twenty-nine are non-empty **before** it touches anything, and names the missing
+ones. That matters for the twenty-five `fromEnv` values in particular: they are not credentials, so
 nothing else would notice they were absent until the backend tried to create that secret —
 which is after the database already exists, leaving a half-applied fleet.
 
@@ -471,6 +491,6 @@ static OpenSSL whose compile-time trust-store path does not exist on a runner. S
 ## Notes
 
 [`lakefile.lean`](https://github.com/typednotes/typednotes-infra/blob/main/lakefile.lean) duplicates ~80 lines of platform-conditional link flags from `infra`'s own
-[lakefile](https://github.com/typednotes/infra/blob/v0.22.0/lakefile.lean). That is not an oversight: Lake does not propagate a dependency's `moreLinkArgs` to a
+[lakefile](https://github.com/typednotes/infra/blob/v0.22.1/lakefile.lean). That is not an oversight: Lake does not propagate a dependency's `moreLinkArgs` to a
 dependent's executable, and a lakefile cannot import a dependency's modules, so the computation
 has to be repeated. Keep the two copies in step.

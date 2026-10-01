@@ -150,7 +150,7 @@ run_cmd do
 -- ⟪native-link-flags:end⟫
 
 package «typednotes-infra» where
-  version := v!"0.5.1"
+  version := v!"0.6.0"
   moreLinkArgs := nativeLinkArgs
 
 -- A tag rather than `main`. `Main.lean` hands the whole declaration to
@@ -159,7 +159,7 @@ package «typednotes-infra» where
 -- breaking change in the front end arrives here unannounced, in whatever
 -- state it happens to be in. Moving forward is a deliberate edit: bump this,
 -- run `lake update infra`, and read the library's CHANGELOG on the way.
-require infra from git "https://github.com/typednotes/infra" @ "v0.22.0"
+require infra from git "https://github.com/typednotes/infra" @ "v0.22.1"
 
 -- Keep Linen current even while the released Infra dependency pins v1.9.2.
 -- The root requirement deliberately overrides that older transitive version.
