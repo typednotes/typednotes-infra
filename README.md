@@ -31,7 +31,7 @@ Around them: one container namespace, two Serverless SQL databases, three IAM id
 (migrator / observer / runtime) with one minted API key each, seven composed connection strings,
 twenty operator-supplied secrets, and **four migration histories**.
 
-The app's schema is pinned to **0.6.0**, including migrations `0001` through `0008`.
+The app's schema is read at **0.7.1**, including migrations `0001` through `0008`.
 Its notebook features also need `lode`, `lun`,
 their `LODE_URL`/`LODE_TOKEN` and `LUN_URL`/`LUN_TOKEN` settings, `COMPUTE_DB_URL`,
 and the graph/compute vault policies described in the app's [`docs/connections.md`](https://github.com/typednotes/typednotes/blob/main/docs/connections.md);
@@ -111,6 +111,8 @@ lake exe typednotes-infra dump   # what the fleet sees in the account, as JSON (
 ```
 
 `lake build` only compiles. `plan` and `apply` are `infra`'s, called from here and from CI.
+`lean-toolchain` pins Lean **4.34.1**; CI uses `actions/checkout` **7.0.1** and
+`leanprover/lean-action` **1.6.0**.
 
 [`Main.lean`](https://github.com/typednotes/typednotes-infra/blob/main/Main.lean) is one call: it hands [`Fleet.lean`](https://github.com/typednotes/typednotes-infra/blob/main/Fleet.lean)'s `typednotes` — the whole declaration, keys,
 plan, `in paris` placement and releases in a single value — to `Infra.Cli.run`, together with
@@ -119,8 +121,8 @@ it the front end took the plan, the placement and the releases as three separate
 nothing stopped a call from handing over one and forgetting another.
 
 [`lakefile.lean`](https://github.com/typednotes/typednotes-infra/blob/main/lakefile.lean) therefore requires `infra` at a tag rather than at `main` — currently
-`v0.22.0`, with an explicit root dependency on linen `v1.9.2`, matching Infra's
-transitive pin (0.19.0 lists managed Kubernetes clusters on every run, so
+`v0.22.0`, with an explicit root dependency on linen `v1.10.0`, overriding Infra's
+older `v1.9.2` transitive pin (0.19.0 lists managed Kubernetes clusters on every run, so
 the Scaleway key needs Kapsule read access — `AllProductsFullAccess` covers it; 0.14.0 read migrations from URLs and ordered them by their
 SQL, with container `migrations` lists and `namePrefixes`; 0.13.0 added the
 `postgresMigrations` kind and made `libpq` a link-time dependency, so `libpq`/`pkg-config` must be
@@ -195,9 +197,9 @@ by the apply itself, and the vault creates its service users itself from the val
 
 **Before the first apply**, three things exist outside this repo:
 
-1. **The release tags, pushed** — `infra` `v0.22.0` and linen `v1.9.2` (then
+1. **The release tags, pushed** — `infra` `v0.22.0` and linen `v1.10.0` (then
    `lake update infra linen` here and commit `lake-manifest.json`), and the services' tags
-   `typednotes` `v0.6.0`, `ledger` `v0.3.6`, `liaison` `v0.6.0`, `secrets` `v1.3.0`,
+   `typednotes` `v0.7.1`, `ledger` `v0.3.6`, `liaison` `v0.6.0`, `secrets` `v1.3.0`,
    whose `.sql` files `plan` reads and whose `docker-publish.yml` workflows build
    **the images** and move their `latest` selectors. Until a schema release's tag is pushed, `plan`
    stops with `HTTP 404 — is the tag or commit pushed, and the path right?`.
