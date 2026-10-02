@@ -34,11 +34,12 @@ classic PostgreSQL compute instance, three IAM identities (migrator / observer /
 runtime) with one minted API key each, eight composed connection strings,
 twenty-five operator-supplied secrets, and **four migration histories**.
 
-The app's schema is read at **0.9.0**, including migrations `0001` through `0011`.
-Fleet release **0.6.1** adopts connection-provider guards, user default workspaces
-and public notebook share/session records. Publish app v0.9.0, Liaison v0.6.3
-and Lun v0.3.1 and wait for their image workflows before applying this declaration.
-See [the rollout notes](docs/release-0.6.1.md).
+The **0.6.2** declaration reads app schema **0.9.1** through `0012`,
+and ledger schema **0.3.7** through `0003`, for organization/account deletion,
+owner/default cleanup and compatible billing cascades. Publish those new source
+tags/images before Plan/Apply; see [the rollout notes](docs/release-0.6.2.md).
+The prior [0.6.1 rollout](docs/release-0.6.1.md) introduced connection-provider
+guards, default workspaces and public shares with Liaison v0.6.3 / Lun v0.3.1.
 The fleet deploys `lode` and `lun`, wires their service URLs and bearer tokens,
 and provisions the separate compute database and bounded graph/compute vault
 policies. App, Lode and Lun stay warm with exactly one instance each; their
