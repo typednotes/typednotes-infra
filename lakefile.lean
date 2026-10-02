@@ -150,7 +150,7 @@ run_cmd do
 -- ⟪native-link-flags:end⟫
 
 package «typednotes-infra» where
-  version := v!"0.6.0"
+  version := v!"0.6.1"
   moreLinkArgs := nativeLinkArgs
 
 -- A tag rather than `main`. `Main.lean` hands the whole declaration to
