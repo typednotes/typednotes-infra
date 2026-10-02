@@ -191,7 +191,7 @@ def pgUrlWithoutSni {K : ProviderId → Kind → Type} (key : K .scaleway .secre
 /-- The reviewed schema release per service: prefixed with `v`, this names
     the git tag its migrations are read at. Images track `latest` separately;
     new migration files are adopted explicitly, never inferred from a tag. -/
-def appRelease : String := "0.7.1"
+def appRelease : String := "0.9.0"
 def ledgerRelease : String := "0.3.6"
 def liaisonRelease : String := "0.6.0"
 def secretsRelease : String := "1.3.0"
@@ -254,7 +254,9 @@ def appMigrations : List MigrationDecl :=
     [ "migrations/0001_core.sql", "migrations/0002_sessions_connections.sql"
     , "migrations/0003_projects_channels.sql", "migrations/0004_computations.sql"
     , "migrations/0005_productivity_connections.sql", "migrations/0006_ai_providers.sql"
-    , "migrations/0007_notebook_contracts.sql", "migrations/0008_connector_authority.sql" ]
+    , "migrations/0007_notebook_contracts.sql", "migrations/0008_connector_authority.sql"
+    , "migrations/0009_connection_provider_guard.sql", "migrations/0010_user_workspaces.sql"
+    , "migrations/0011_notebook_shares.sql" ]
 def ledgerMigrations : List MigrationDecl :=
   github "typednotes/ledger" s!"v{ledgerRelease}"
     ["sql/0001_init.sql", "sql/0002_credit_ledger_idempotency.sql"]
@@ -757,15 +759,18 @@ private def fakeEnv : Env typednotes.keys.Key :=
   "{prefix=\"secret/data/thirdparty/postgres/\", capabilities=[\"read\"]}," ++
   "{prefix=\"secret/data/thirdparty/vault/\", capabilities=[\"read\"]}]}]"
 #guard appMigrations.map (·.source) =
-  [ .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.7.1/migrations/0001_core.sql"
-  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.7.1/migrations/0002_sessions_connections.sql"
-  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.7.1/migrations/0003_projects_channels.sql"
-  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.7.1/migrations/0004_computations.sql"
-  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.7.1/migrations/0005_productivity_connections.sql"
-  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.7.1/migrations/0006_ai_providers.sql"
-  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.7.1/migrations/0007_notebook_contracts.sql"
-  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.7.1/migrations/0008_connector_authority.sql" ]
-#guard appMigrations.map (·.id) = ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008"]
+  [ .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.9.0/migrations/0001_core.sql"
+  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.9.0/migrations/0002_sessions_connections.sql"
+  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.9.0/migrations/0003_projects_channels.sql"
+  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.9.0/migrations/0004_computations.sql"
+  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.9.0/migrations/0005_productivity_connections.sql"
+  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.9.0/migrations/0006_ai_providers.sql"
+  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.9.0/migrations/0007_notebook_contracts.sql"
+  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.9.0/migrations/0008_connector_authority.sql"
+  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.9.0/migrations/0009_connection_provider_guard.sql"
+  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.9.0/migrations/0010_user_workspaces.sql"
+  , .url "https://raw.githubusercontent.com/typednotes/typednotes/v0.9.0/migrations/0011_notebook_shares.sql" ]
+#guard appMigrations.map (·.id) = ["0001", "0002", "0003", "0004", "0005", "0006", "0007", "0008", "0009", "0010", "0011"]
 #guard ledgerMigrations.map (·.id) = ["0001", "0002"]
 #guard secretsMigrations.map (·.source) =
   [.url "https://raw.githubusercontent.com/typednotes/secrets/v1.3.0/crates/secrets-storage-postgres/src/migrations/0001_init.sql"]
