@@ -34,10 +34,11 @@ classic PostgreSQL compute instance, three IAM identities (migrator / observer /
 runtime) with one minted API key each, eight composed connection strings,
 twenty-five operator-supplied secrets, and **four migration histories**.
 
-The **0.6.2** declaration reads app schema **0.9.1** through `0012`,
+The local **0.6.3** declaration reads app schema **0.10.0** through `0013`,
 and ledger schema **0.3.7** through `0003`, for organization/account deletion,
-owner/default cleanup and compatible billing cascades. Publish those new source
-tags/images before Plan/Apply; see [the rollout notes](docs/release-0.6.2.md).
+owner/default cleanup, atomic bootstrap and durable generation requests. Publish those new source
+tags/images, Lode **0.4.3** and the cached Lun **0.3.2** before Plan/Apply; publish
+Linen **1.11.0** first (Lun's dependency lock is prepared). See [the rollout notes](docs/release-0.6.3.md).
 The prior [0.6.1 rollout](docs/release-0.6.1.md) introduced connection-provider
 guards, default workspaces and public shares with Liaison v0.6.3 / Lun v0.3.1.
 The fleet deploys `lode` and `lun`, wires their service URLs and bearer tokens,
