@@ -150,7 +150,7 @@ run_cmd do
 -- ⟪native-link-flags:end⟫
 
 package «typednotes-infra» where
-  version := v!"0.6.3"
+  version := v!"0.7.0"
   moreLinkArgs := nativeLinkArgs
 
 -- A tag rather than `main`. `Main.lean` hands the whole declaration to
@@ -163,7 +163,7 @@ require infra from git "https://github.com/typednotes/infra" @ "v0.22.2"
 
 -- Keep Linen current even while the released Infra dependency pins v1.9.2.
 -- The root requirement deliberately overrides that older transitive version.
-require linen from git "https://github.com/typednotes/linen" @ "v1.10.0"
+require linen from git "https://github.com/typednotes/linen" @ "v1.12.0"
 
 
 @[default_target]
