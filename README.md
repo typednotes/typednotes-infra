@@ -34,7 +34,14 @@ classic PostgreSQL compute instance, three IAM identities (migrator / observer /
 runtime) with one minted API key each, eight composed connection strings,
 twenty-five operator-supplied secrets, and **four migration histories**.
 
-The local **0.6.3** declaration reads app schema **0.10.0** through `0013`,
+The local **0.7.0** declaration reads app schema **0.11.0** through `0015`
+for direct project notes, stateless execution, durable schedules and delivery
+outboxes. It targets **Lun 0.4.1**, **Lode 0.5.0** and **Linen 1.12.0**.
+App/writer/fleet release commits and annotated tags are local and unpublished; the breaking
+runtime transition requires draining old work and pausing old dispatch before
+the coordinated migration/rollout. See [the new rollout](docs/release-0.7.0.md).
+
+The earlier local **0.6.3** declaration reads app schema **0.10.0** through `0013`,
 and ledger schema **0.3.7** through `0003`, for organization/account deletion,
 owner/default cleanup, atomic bootstrap and durable generation requests. Publish those new source
 tags/images, Lode **0.4.3** and the cached Lun **0.3.2** before Plan/Apply; publish
