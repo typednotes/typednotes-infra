@@ -17,7 +17,7 @@ unconditionally.
 
 [`Fleet.lean`](https://github.com/typednotes/typednotes-infra/blob/main/Fleet.lean) is the whole declaration: the `typednotes` system of
 [`typednotes/typednotes`](https://github.com/typednotes/typednotes/tree/main)'s [`docs/architecture.md`](https://github.com/typednotes/typednotes/blob/main/docs/architecture.md),
-as far as it is built — 54 Scaleway resources in one apply.
+as far as it is built — 55 Scaleway resources in one apply.
 
 | Container | What | Database | Image |
 |---|---|---|---|
@@ -33,6 +33,13 @@ Around them: one container namespace, two Serverless SQL databases, a separate
 classic PostgreSQL compute instance, three IAM identities (migrator / observer /
 runtime) with one minted API key each, eight composed connection strings,
 twenty-five operator-supplied secrets, and **four migration histories**.
+
+**Network access:** only the app is generally public. Supporting containers
+use a dedicated Private Network with public endpoints disabled. The DB inspector
+is reachable through an IP-restricted `operator-gateway`, and the compute database
+has only a private endpoint. The two IAM-protected Serverless SQL endpoints remain
+public by explicit choice. See [service access](docs/service-access.md) for the
+allowlist, private-network prerequisites and deployment checks.
 
 The local **0.7.0** declaration reads app schema **0.11.0** through `0015`
 for direct project notes, stateless execution, durable schedules and delivery
@@ -84,8 +91,9 @@ secrets-history
 - **An applied migration can't be changed underneath you**: infra compares the SQL at the URL with
   what the database recorded when it applied it, and refuses a mismatch (e.g. a moved tag).
 
-All seven container images use **`latest` selectors**, including Lode, Lun and
-the DB inspector. Infra **0.22.2** resolves
+All seven service images use **`latest` selectors**, including Lode, Lun and
+the DB inspector. The admin gateway uses the official `nginx:alpine` image.
+Infra **0.23.0** resolves
 each image selector to a verified registry manifest digest before a live diff and
 applies that frozen `registry/repository@sha256:…` reference. The next run
 resolves the tag again: new content updates in place, unchanged content
@@ -94,8 +102,8 @@ Registry failures stop the run, and offline `check` never contacts a registry.
 An existing tag-only deployment gets one update to establish its digest;
 Scaleway's update API automatically redeploys the changed container. A published
 image becomes active on the next Apply; pushing a tag alone does not update a
-running Scaleway container. An offline guard checks every container's declared
-image ends in `:latest`.
+running Scaleway container. An offline guard checks every service image ends
+in `:latest` and the gateway uses its declared Alpine selector.
 
 Each service's **schema release value** (`ledgerRelease := "0.3.6"`, …) still
 names the git tag its SQL is read at. Image tags do not automatically adopt SQL:
@@ -109,7 +117,8 @@ Because the SQL is fetched at `plan`, the offline `check` verifies the declarati
 ### The DB inspector
 
 Scaleway's console has no query editor for Serverless SQL (only connection strings for `psql`), so
-the fleet runs pgweb at the `db-inspector` container's URL. Three independent protections:
+the fleet runs pgweb through the IP-restricted admin gateway (see
+[service access](docs/service-access.md)). Four independent protections:
 
 1. **HTTP basic auth** with a username and password *you* choose: `DB_INSPECTOR_USERNAME` /
    `DB_INSPECTOR_PASSWORD`, stored in Scaleway Secret Manager, never in this repo.
@@ -117,6 +126,8 @@ the fleet runs pgweb at the `db-inspector` container's URL. Three independent pr
    nothing can be changed — an `INSERT` fails with `permission denied`.
 3. **`PGWEB_LOCK_SESSION`**: pgweb's "connect to another server" form is disabled, so it cannot be
    used as a proxy to other hosts.
+4. **Operator IP allowlist** at the gateway; the inspector's direct public
+   container endpoint is disabled.
 
 It shows `typednotes-db` (app, ledger, liaison). The vault's database is deliberately not exposed —
 it holds only ciphertext. pgweb's driver sends no TLS SNI, which Serverless SQL needs, so its
@@ -133,18 +144,23 @@ lake exe typednotes-infra apply  # actually reconcile — the only mutating comm
 lake exe typednotes-infra dump   # what the fleet sees in the account, as JSON (no secret values)
 ```
 
+Access, endpoint visibility and admin ingress are resource properties managed
+by Infra 0.23.0. `Main.lean` delegates directly to its CLI, with no networking
+script or additional apply hooks. The existing private network is a prerequisite
+described in [service access](docs/service-access.md).
+
 `lake build` only compiles. `plan` and `apply` are `infra`'s, called from here and from CI.
 `lean-toolchain` pins Lean **4.34.1**; CI uses `actions/checkout` **7.0.1** and
 `leanprover/lean-action` **1.6.0**.
 
-[`Main.lean`](https://github.com/typednotes/typednotes-infra/blob/main/Main.lean) is one call: it hands [`Fleet.lean`](https://github.com/typednotes/typednotes-infra/blob/main/Fleet.lean)'s `typednotes` — the whole declaration, keys,
+[`Main.lean`](https://github.com/typednotes/typednotes-infra/blob/main/Main.lean) hands [`Fleet.lean`](https://github.com/typednotes/typednotes-infra/blob/main/Fleet.lean)'s `typednotes` — the whole declaration, keys,
 plan, `in paris` placement and releases in a single value — to `Infra.Cli.run`, together with
 this repo's offline check and the accounts it is for. That shape needs **infra ≥ 0.9.0**; before
 it the front end took the plan, the placement and the releases as three separate arguments, and
 nothing stopped a call from handing over one and forgetting another.
 
 [`lakefile.lean`](https://github.com/typednotes/typednotes-infra/blob/main/lakefile.lean) therefore requires `infra` at a tag rather than at `main` — currently
-`v0.22.2`, with an explicit root dependency on linen `v1.10.0`, overriding Infra's
+`v0.23.0`, with an explicit root dependency on linen `v1.12.0`, overriding Infra's
 older `v1.9.2` transitive pin (0.19.0 lists managed Kubernetes clusters on every run, so
 the Scaleway key needs Kapsule read access — `AllProductsFullAccess` covers it; 0.14.0 read migrations from URLs and ordered them by their
 SQL, with container `migrations` lists and `namePrefixes`; 0.13.0 added the
@@ -225,7 +241,7 @@ by the apply itself, and the vault creates its service users itself from the val
 
 **Before the first apply**, three things exist outside this repo:
 
-1. **The release tags, pushed** — `infra` `v0.22.2` and linen `v1.10.0` (then
+1. **The release tags, pushed** — `infra` `v0.23.0` and linen `v1.12.0` (then
    `lake update infra linen` here and commit `lake-manifest.json`), and the services' tags
    `typednotes` `v0.7.1`, `ledger` `v0.3.6`, `liaison` `v0.6.0`, `secrets` `v1.3.0`,
    whose `.sql` files `plan` reads and whose `docker-publish.yml` workflows build
@@ -262,9 +278,10 @@ done, everything works except sign-in, those connections and inbound messages.
 
 ### Custom domain
 
-The app is served at **`https://app.typednotes.com`**. `infra` has no DNS, container-domain or
-HTTPS-only setting yet (DNS is under "Not in this version" in its [`docs/coverage.md`](https://github.com/typednotes/infra/blob/v0.22.2/docs/coverage.md)), so all
-three are set with the [`scw` CLI](https://www.scaleway.com/en/cli/) (checked with 2.62). The
+The app is served at **`https://app.typednotes.com`**. DNS and container-domain
+bindings remain outside Infra's resource surface, so those are set with the
+[`scw` CLI](https://www.scaleway.com/en/cli/) (checked with 2.62). HTTPS-only is
+declared on the app resource as `httpsOnly := some true`. The
 `typednotes.com` zone is in Scaleway Domains & DNS.
 
 **[`scripts/check-domain.sh`](https://github.com/typednotes/typednotes-infra/blob/main/scripts/check-domain.sh)** checks the whole path — the container and its `PUBLIC_URL`, the
@@ -343,10 +360,9 @@ How this sits next to the fleet:
   ends up there. Before the domain is attached those callbacks do not resolve, so sign-in fails and
   nothing else does. To serve somewhere else, change `appPublicUrl`: `env` is compared on apply,
   so that alone redeploys the app.
-- **Infra leaves it alone.** It lists neither DNS records nor container domains, so no `plan` or
-  `apply` touches or reports them. HTTPS-only is a field of the container itself that `infra` does
-  not know about; whether an update of the container keeps it has not been confirmed, so run
-  `scripts/check-domain.sh` after an apply that updated `typednotes-app`.
+- **Bindings stay external.** Infra does not manage DNS records or container
+  domain bindings. HTTPS-only is now compared and reconciled as a resource
+  property. `scripts/check-domain.sh` verifies the full DNS/certificate/app path.
 - **Updates keep it.** Releases update the container in place and keep its id, so the binding
   survives image bumps.
 - **A recreated container loses it.** If `typednotes-app` is ever destroyed and created again (a
@@ -507,6 +523,6 @@ static OpenSSL whose compile-time trust-store path does not exist on a runner. S
 ## Notes
 
 [`lakefile.lean`](https://github.com/typednotes/typednotes-infra/blob/main/lakefile.lean) duplicates ~80 lines of platform-conditional link flags from `infra`'s own
-[lakefile](https://github.com/typednotes/infra/blob/v0.22.2/lakefile.lean). That is not an oversight: Lake does not propagate a dependency's `moreLinkArgs` to a
+[lakefile](https://github.com/typednotes/infra/blob/v0.23.0/lakefile.lean). That is not an oversight: Lake does not propagate a dependency's `moreLinkArgs` to a
 dependent's executable, and a lakefile cannot import a dependency's modules, so the computation
 has to be repeated. Keep the two copies in step.

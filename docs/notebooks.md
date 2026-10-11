@@ -51,8 +51,9 @@ password rotation merely by updating a secret.
 
 ## Publication and rollout
 
-1. Publish Infra `v0.22.2` first: push its main commit, wait for that exact
-   commit's main CI to pass, then push its tag. It uses supported SBS 5K storage
+1. Publish Infra `v0.23.0` first: push its main commit and tag; the publisher
+   waits for that exact commit's main CI to pass. It declares network access and
+   proxy permissions as resource properties and uses supported SBS 5K storage
    instead of deprecated BSSD, fixes classic declarations, preserves the real
    endpoint port, waits for database readiness and avoids guessed username
    drift. The fleet lockfile pins that exact commit.

@@ -159,7 +159,7 @@ package «typednotes-infra» where
 -- breaking change in the front end arrives here unannounced, in whatever
 -- state it happens to be in. Moving forward is a deliberate edit: bump this,
 -- run `lake update infra`, and read the library's CHANGELOG on the way.
-require infra from git "https://github.com/typednotes/infra" @ "v0.22.2"
+require infra from git "https://github.com/typednotes/infra" @ "v0.23.0"
 
 -- Keep Linen current even while the released Infra dependency pins v1.9.2.
 -- The root requirement deliberately overrides that older transitive version.
