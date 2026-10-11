@@ -1,5 +1,6 @@
 import Infra
 import Fleet.Notebook
+import Fleet.Access
 
 /-
   The declared fleet: everything this project manages.
@@ -15,7 +16,7 @@ import Fleet.Notebook
 
   ## What runs
 
-  Seven Serverless Containers in one namespace, over two Serverless SQL
+  Seven service containers and an IP-gated admin gateway in one namespace, over two Serverless SQL
   databases — `docs/architecture.md` §2 of `typednotes/typednotes`, as far as
   it is built:
 
@@ -403,7 +404,8 @@ fleet typednotes in paris where
       , masterUsername       := "typednotes_compute"
       , masterPasswordSecret := "typednotes-compute-password"
       , version              := "16"
-      , storageGb            := 10 }
+      , storageGb            := 10
+      , scalewayAccess       := some (ScalewayAccess.internalOnly Typednotes.Access.privateNetworkId) }
 
     -- ── Connection strings, composed at apply ───────────────────────────
     resource secrets "secrets-db-migrator-url" { valueFrom := composed (pgUrl migratorKey secretsDb "secrets-db") }
@@ -479,6 +481,8 @@ fleet typednotes in paris where
       { namespace' := ns
       , image      := secretsImage
       , port       := 8200
+      , access     := some (ScalewayAccess.internalOnly Typednotes.Access.privateNetworkId)
+      , privacy    := some ScalewayContainerPrivacy.openAccess
       , migrations := [secretsHistory]
       -- A username is not a secret; its password partner is below, and
       -- `config.validate()` rejects one without the other. Migrations are
@@ -502,14 +506,17 @@ fleet typednotes in paris where
       { namespace' := ns
       , image := lunImage
       , port := 8080
+      , access := some (ScalewayAccess.internalOnly Typednotes.Access.privateNetworkId)
+      , privacy := some ScalewayContainerPrivacy.openAccess
       , minScale := Typednotes.Notebook.workerCapacity.minScale
       , maxScale := Typednotes.Notebook.workerCapacity.maxScale
       , memoryMb := 4096
       , cpuLimit := 2000
       , timeoutSec := 900
       , env := Expr.ap (Expr.map (fun vault broker =>
-          [ ("LUN_PORT", "8080"), ("LUN_LIAISON_URL", s!"https://{broker.url}")
-          , ("SECRETS_HOST", vault.url), ("SECRETS_USERNAME", "lun")
+          [ ("LUN_PORT", "8080"), ("LUN_LIAISON_URL", broker.privateUrl)
+          , ("SECRETS_HOST", Typednotes.Access.privateHost vault.privateUrl), ("SECRETS_USERNAME", "lun")
+          , ("SECRETS_INSECURE", "1")
           , ("SSL_CERT_FILE", "/etc/ssl/certs/ca-certificates.crt")
           , ("SSL_CERT_DIR", "/etc/ssl/certs") ]) (observedOf secretsServer))
           (observedOf liaisonContainer)
@@ -520,14 +527,16 @@ fleet typednotes in paris where
       { namespace' := ns
       , image := lodeImage
       , port := 8080
+      , access := some (ScalewayAccess.internalOnly Typednotes.Access.privateNetworkId)
+      , privacy := some ScalewayContainerPrivacy.openAccess
       , minScale := Typednotes.Notebook.workerCapacity.minScale
       , maxScale := Typednotes.Notebook.workerCapacity.maxScale
       , memoryMb := 4096
       , cpuLimit := 2000
       , timeoutSec := 900
       , env := Expr.ap (Expr.map (fun runner broker =>
-          [ ("LODE_PORT", "8080"), ("LODE_LUN_URL", s!"https://{runner.url}")
-          , ("LODE_LIAISON_URL", s!"https://{broker.url}")
+          [ ("LODE_PORT", "8080"), ("LODE_LUN_URL", runner.privateUrl)
+          , ("LODE_LIAISON_URL", broker.privateUrl)
           , ("SSL_CERT_FILE", "/etc/ssl/certs/ca-certificates.crt")
           , ("SSL_CERT_DIR", "/etc/ssl/certs") ]) (observedOf lunContainer))
           (observedOf liaisonContainer)
@@ -548,16 +557,19 @@ fleet typednotes in paris where
       { namespace' := ns
       , image      := appImage
       , port       := 8080
+      , access     := some (ScalewayAccess.publicInNetwork Typednotes.Access.privateNetworkId)
+      , privacy    := some ScalewayContainerPrivacy.openAccess
+      , httpsOnly  := some true
       , migrations := [coreHistory, ledgerHistory]
       , minScale   := Typednotes.Notebook.workerCapacity.minScale
       , maxScale   := Typednotes.Notebook.workerCapacity.maxScale
       , timeoutSec := 120
       , env        := Expr.ap (Expr.ap (Expr.ap (Expr.map (fun vault broker writer runner =>
-                        [ ("SECRETS_URL", s!"https://{vault.url}")
+                        [ ("SECRETS_URL", vault.privateUrl)
                         , ("SECRETS_USERNAME", "typednotes-app")
-                        , ("LIAISON_URL", s!"https://{broker.url}")
-                        , ("LODE_URL", s!"https://{writer.url}")
-                        , ("LUN_URL", s!"https://{runner.url}")
+                        , ("LIAISON_URL", broker.privateUrl)
+                        , ("LODE_URL", writer.privateUrl)
+                        , ("LUN_URL", runner.privateUrl)
                         , ("PUBLIC_URL", appPublicUrl) ])
                         (observedOf secretsServer)) (observedOf liaisonContainer))
                         (observedOf lodeContainer)) (observedOf lunContainer)
@@ -588,6 +600,8 @@ fleet typednotes in paris where
       { namespace' := ns
       , image      := ledgerImage
       , port       := 8080
+      , access     := some (ScalewayAccess.internalOnly Typednotes.Access.privateNetworkId)
+      , privacy    := some ScalewayContainerPrivacy.openAccess
       , minScale   := 1
       , migrations := [ledgerHistory]
       , secretEnv  := [ ("DATABASE_URL", appDbUrl) ] }
@@ -607,6 +621,8 @@ fleet typednotes in paris where
       { namespace' := ns
       , image      := liaisonImage
       , port       := 8080
+      , access     := some (ScalewayAccess.internalOnly Typednotes.Access.privateNetworkId)
+      , privacy    := some ScalewayContainerPrivacy.openAccess
       , migrations := [coreHistory, ledgerHistory, liaisonHistory]
       -- `SSL_CERT_*`: Lean's static OpenSSL has no trust store of its own
       -- (the same reason `apply.yml` sets them), so without these every
@@ -614,7 +630,8 @@ fleet typednotes in paris where
       -- verify. liaison ≥ 0.4.1 bakes them into its image; kept here so the
       -- fleet does not depend on that.
       , env        := (observedOf secretsServer).map fun vault =>
-                        [ ("SECRETS_HOST", vault.url), ("SECRETS_USERNAME", "liaison")
+                        [ ("SECRETS_HOST", Typednotes.Access.privateHost vault.privateUrl), ("SECRETS_USERNAME", "liaison")
+                        , ("SECRETS_INSECURE", "1")
                         , ("LIAISON_PORT", "8080")
                         , ("SSL_CERT_FILE", "/etc/ssl/certs/ca-certificates.crt")
                         , ("SSL_CERT_DIR", "/etc/ssl/certs") ]
@@ -637,15 +654,31 @@ fleet typednotes in paris where
     -- a proxy to arbitrary hosts. It waits for every history on the
     -- database, so it first comes up on the full schema. The vault's
     -- database is deliberately not exposed: it holds only ciphertext.
-    resource scalewayContainer "db-inspector"
+    resource scalewayContainer "db-inspector" as inspectorContainer
       { namespace' := ns
       , image      := inspectorImage
       , port       := 8081
+      , access     := some (ScalewayAccess.internalOnly Typednotes.Access.privateNetworkId)
+      , privacy    := some ScalewayContainerPrivacy.openAccess
       , migrations := [coreHistory, ledgerHistory, liaisonHistory]
-      , env        := [ ("PGWEB_LOCK_SESSION", "1") ]
+      , env        := [ ("PGWEB_LOCK_SESSION", "1"), ("PGWEB_URL_PREFIX", "/db-inspector") ]
       , secretEnv  := [ ("PGWEB_DATABASE_URL", inspectorDbUrl)
                       , ("PGWEB_AUTH_USER", inspectorUser)
-                      , ("PGWEB_AUTH_PASS", inspectorPassword) ] }
+                       , ("PGWEB_AUTH_PASS", inspectorPassword) ] }
+
+    -- The ingress policy is a resource property; infra generates, observes and
+    -- reconciles the proxy to this typed, private-only inspector reference.
+    resource scalewayContainer "operator-gateway"
+      { namespace' := ns
+      , image := Typednotes.Access.gatewayImage
+      , port := 8080
+      , access := some (ScalewayAccess.publicInNetwork Typednotes.Access.privateNetworkId)
+      , proxy := proxyTo inspectorContainer Typednotes.Access.operatorCidrs "/db-inspector/"
+      , minScale := 0
+      , maxScale := 1
+      , memoryMb := 512
+      , cpuLimit := 500
+      , timeoutSec := 900 }
 
 /-- The ownership boundary, which the `fleet` command has no syntax for: it is
     an argument to `Infra.Cli.run`, in `Main.lean`.
@@ -698,9 +731,9 @@ def typednotesBoundary : Boundary :=
 -- `iam` resource to mint against fails here.
 #guard typednotes.keys.count .scaleway .iam = 3
 
--- Four histories, seven containers and a dedicated classic compute database.
+-- Four histories, seven services plus an operator gateway, and a compute database.
 #guard typednotes.keys.count .scaleway .postgresMigrations = 4
-#guard typednotes.keys.count .scaleway .scalewayContainer = 7
+#guard typednotes.keys.count .scaleway .scalewayContainer = 8
 #guard typednotes.keys.count .scaleway .postgres = 3
 
 /- The inspector's URL, composed against stand-in observed values (the same
@@ -719,7 +752,8 @@ private def fakeEnv : Env typednotes.keys.Key :=
              { handle := ⟨"s"⟩, version := "1", accessKey := "SCWXXXX", principal := "app-id" }
         | .scaleway, .scalewayContainer => some
             { handle := ⟨typednotes.keys.name .scaleway .scalewayContainer key⟩
-              url := s!"{typednotes.keys.name .scaleway .scalewayContainer key}.example.invalid" }
+              url := s!"{typednotes.keys.name .scaleway .scalewayContainer key}.example.invalid"
+              privateUrl := s!"http://{typednotes.keys.name .scaleway .scalewayContainer key}.example.invalid" }
         | _, _ => none }
 
 #guard match typednotes.keys.keyOfName? .scaleway .secrets "typednotes-db-pgweb-url" with
@@ -732,11 +766,14 @@ private def fakeEnv : Env typednotes.keys.Key :=
       | _ => false
     | _ => false
 
--- Every declared container tracks latest content, including notebook workers
--- and the inspector. Inspect the resource specs, not just the image constants.
+-- Service containers track latest; the gateway uses the official Alpine variant
+-- (its integration probe uses BusyBox). Inspect the authored resource specs.
 #guard (Finite.elems (α := typednotes.keys.Key .scaleway .scalewayContainer)).all fun key =>
   match typednotes.plan.assign .scaleway .scalewayContainer key with
-  | .present spec => spec.image.asLit.any (·.endsWith ":latest")
+  | .present spec =>
+    if typednotes.keys.name .scaleway .scalewayContainer key == Typednotes.Access.gatewayContainer then
+      spec.image.asLit == some Typednotes.Access.gatewayImage
+    else spec.image.asLit.any (·.endsWith ":latest")
   | _ => false
 -- No trailing slash: the app appends `/auth/…` to it.
 #guard appPublicUrl = "https://app.typednotes.com"
@@ -842,6 +879,45 @@ private def notebookContainer? (name : String) :
     | .present spec => some spec
     | _ => none
 
+-- Every container has exactly one access role. Adding a service without
+-- classifying it cannot silently give it the provider's public default.
+#guard (Finite.elems (α := typednotes.keys.Key .scaleway .scalewayContainer)).all fun key =>
+  let name := typednotes.keys.name .scaleway .scalewayContainer key
+  name == Typednotes.Access.publicContainer || name == Typednotes.Access.gatewayContainer ||
+    Typednotes.Access.supportingContainers.contains name
+#guard Typednotes.Access.supportingContainers.all fun name =>
+  (typednotes.keys.keyOfName? .scaleway .scalewayContainer name).isSome
+
+#guard typednotes.plan.accessIsSound
+#guard match notebookContainer? Typednotes.Access.gatewayContainer with
+  | some spec => match spec.proxy.asKnown.bind Expr.asLit with
+    | some (some proxy) => proxy.allowedCidrs == Typednotes.Access.operatorCidrs &&
+        proxy.pathPrefix == "/db-inspector/" &&
+        typednotes.keys.name .scaleway .scalewayContainer proxy.backend == "db-inspector"
+    | _ => false
+  | none => false
+
+#guard (Finite.elems (α := typednotes.keys.Key .scaleway .scalewayContainer)).all fun key =>
+  match typednotes.plan.assign .scaleway .scalewayContainer key with
+  | .present spec => match spec.access.asKnown.bind Expr.asLit with
+    | some (some access) =>
+      let name := typednotes.keys.name .scaleway .scalewayContainer key
+      access.privateNetworkId == some Typednotes.Access.privateNetworkId &&
+        access.publicEndpoint == (name == Typednotes.Access.publicContainer || name == Typednotes.Access.gatewayContainer) &&
+        access.privateEndpoint == Typednotes.Access.supportingContainers.contains name
+    | _ => false
+  | _ => false
+
+#guard (Finite.elems (α := typednotes.keys.Key .scaleway .postgres)).all fun key =>
+  let name := typednotes.keys.name .scaleway .postgres key
+  match typednotes.plan.assign .scaleway .postgres key with
+  | .present spec =>
+    let access := (spec.scalewayAccess.asKnown.bind Expr.asLit).getD none
+    if name == "typednotes-compute-db" then
+      access == some (ScalewayAccess.internalOnly Typednotes.Access.privateNetworkId)
+    else access.isNone -- Explicitly retained Serverless SQL exception.
+  | _ => false
+
 -- These checks inspect the authored fleet, including resolved dependency URLs.
 #guard ["typednotes-app", "lode", "lun"].all fun name =>
   match notebookContainer? name with
@@ -851,8 +927,8 @@ private def notebookContainer? (name : String) :
 
 #guard match notebookContainer? "typednotes-app" with
   | some spec => match Expr.eval? fakeEnv (spec.env.getD (.lit [])) with
-    | some env => env.lookup "LODE_URL" == some "https://lode.example.invalid" &&
-        env.lookup "LUN_URL" == some "https://lun.example.invalid"
+    | some env => env.lookup "LODE_URL" == some "http://lode.example.invalid" &&
+        env.lookup "LUN_URL" == some "http://lun.example.invalid"
     | none => false
   | none => false
 
