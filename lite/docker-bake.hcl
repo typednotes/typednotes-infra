@@ -50,6 +50,52 @@ target "lun" {
   cache-from = ["type=gha,scope=lun-${replace(PLATFORM, "/", "-")}"]
   cache-to = ["type=gha,scope=lun-${replace(PLATFORM, "/", "-")},mode=max"]
 }
+
+// CI selects ONE artifact target on each fresh service runner. The final
+// assembly runners consume these flattened images by digest, not build trees.
+target "app-artifact" {
+  inherits = ["_platform"]
+  context = "."
+  dockerfile = "images/artifact.Dockerfile"
+  target = "app"
+  contexts = { service = "target:app" }
+}
+target "ledger-artifact" {
+  inherits = ["_platform"]
+  context = "."
+  dockerfile = "images/artifact.Dockerfile"
+  target = "ledger"
+  contexts = { service = "target:ledger" }
+}
+target "liaison-artifact" {
+  inherits = ["_platform"]
+  context = "."
+  dockerfile = "images/artifact.Dockerfile"
+  target = "liaison"
+  contexts = { service = "target:liaison" }
+}
+target "vault-artifact" {
+  inherits = ["_platform"]
+  context = "."
+  dockerfile = "images/artifact.Dockerfile"
+  target = "vault"
+  contexts = { service = "target:vault" }
+}
+target "lode-artifact" {
+  inherits = ["_platform"]
+  context = "."
+  dockerfile = "images/artifact.Dockerfile"
+  target = "lode"
+  contexts = { service = "target:lode" }
+}
+target "lun-artifact" {
+  inherits = ["_platform"]
+  context = "."
+  dockerfile = "images/artifact.Dockerfile"
+  target = "lun"
+  contexts = { service = "target:lun" }
+}
+
 target "lite" {
   inherits = ["_platform"]
   context = "."

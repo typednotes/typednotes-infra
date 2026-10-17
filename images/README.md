@@ -91,7 +91,18 @@ gh api --method POST repos/typednotes/typednotes-infra/dispatches \
 No sender is required for scheduled detection. Dispatch payloads are not used as
 source refs or commands: the receiver independently resolves all newest tags.
 
-Each rebuild uses native amd64 and arm64 runners. Each runner builds **both**
+Each rebuild uses native amd64 and arm64 runners. Lean checks and policy
+correspondence run on a separate verification VM. A service/architecture matrix
+then compiles **one service per fresh runner**, with at most four compiler jobs
+in parallel. `images/artifact.Dockerfile` flattens only the binary, toolchain and
+package-cache inputs needed by assembly into scratch OCI images. These are
+internal `source-*` tags in the existing Lite package, not extra service packages
+or updates to the services' own published tags.
+
+Fresh assembly runners import all six artifacts **by digest**. Their receipts
+must match the source commit, bundle ID, workflow run and architecture. The
+assembly graph is checked to contain only Lite and Local, so it cannot silently
+recompile all six services on the same VM. Each assembly runner builds both
 variants, tests Lite against disposable external PostgreSQL, and tests Local
 through complete container recreation with its persisted database/key material.
 Only after both architectures pass are multi-platform manifests published as
@@ -106,6 +117,24 @@ so a new scheduled check cannot cancel a queued manual Apply. Run-specific build
 tags also prevent overlapping publishers from mixing architectures or returning
 the other run's output. A cached snapshot's digest is read freshly from its
 published build tag, including after a forced base-image refresh.
+Successful jobs from an earlier attempt of the same workflow run can be reused
+when retrying failed jobs; unrelated runs, changed snapshots and mutable image
+tags are refused. Artifact uploads replace their own earlier-attempt receipts.
+
+### Runner disk budget
+
+The first v0.9.0 [Combined images run](https://github.com/typednotes/typednotes-infra/actions/runs/39017091446)
+exhausted disk on both architectures. The monolithic compiler jobs accumulated
+six source/build trees, multiple Lean installations and a host Lean toolchain;
+amd64 failed unpacking Lean and arm64 failed installing the runtime packages.
+
+The isolated source/artifact/assembly stages bound each VM's working set and
+avoid transporting base OS layers, Cargo targets and ownership-copyup layers
+into assembly. Host Lean is installed only on the verification VM. Image-build
+VMs also reclaim the hosted image's unused .NET, Android, GHC, CodeQL and
+PowerShell SDK directories, logging disk space before and after. The cleanup
+script refuses local and self-hosted machines and never removes workspace or
+persistent application data. Its dry-run path is exercised without deleting files.
 
 ## Schema alignment during Lite deployment
 
@@ -145,3 +174,7 @@ in the native PostgreSQL test. After building the images, CI runs:
 python3 lite/check-image.py "$LITE_IMAGE" .images/manifest.json
 python3 local/check-image.py "$LOCAL_IMAGE"
 ```
+
+Assembly receipt validation and both architecture/source-only build graphs are
+covered by `images/tests/test_assembly.py`; graph inspection needs the Docker
+Buildx CLI, but does not require a running Docker daemon.
