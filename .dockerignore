@@ -1,0 +1,4 @@
+*
+!lite/
+!lite/Dockerfile
+!lite/runtime.py

@@ -6,6 +6,16 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      deployment:
+        description: Deployment architecture
+        required: true
+        type: choice
+        default: lite
+        options: [lite, full]
+
+permissions:
+  contents: read
 
 # Never runs `apply`. This workflow only ever shows what *would*
 # change; applying lives in `apply.yml`, which has no push trigger at all and
@@ -13,6 +23,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      TYPEDNOTES_DEPLOYMENT: ${{ inputs.deployment || 'lite' }}
     steps:
       - uses: actions/checkout@v7.0.1
       # Same native FFI dependency set as `infra`'s own CI, for the same reason:
@@ -37,7 +49,13 @@ jobs:
           echo "SSL_CERT_DIR=/etc/ssl/certs" >> "$GITHUB_ENV"
       # Offline, no credentials needed or available. Runs on main and PRs to main.
       - name: Run offline self-checks
-        run: lake exe typednotes-infra check
+        run: |
+          TYPEDNOTES_DEPLOYMENT=lite lake exe typednotes-infra check
+          TYPEDNOTES_DEPLOYMENT=full lake exe typednotes-infra check
+          python3 -m unittest discover -s lite/tests -v
+          lake env lean --run scripts/lite-config.lean > "$RUNNER_TEMP/lite-config.json"
+          docker buildx bake -f lite/docker-bake.hcl --print > "$RUNNER_TEMP/lite-bake.json"
+          python3 lite/check-build.py "$RUNNER_TEMP/lite-config.json" "$RUNNER_TEMP/lite-bake.json"
 
       # Live plan: push to `main` only. Scaleway credentials only. The fleet
       # declares nothing on AWS; `accounts` names it, so without AWS
@@ -46,7 +64,7 @@ jobs:
       # resources carrying this fleet's marker that the declaration no longer
       # names — so the key needs read access across the project.
       - name: Plan
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
         env:
           SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
           SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}

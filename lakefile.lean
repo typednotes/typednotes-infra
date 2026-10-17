@@ -150,7 +150,7 @@ run_cmd do
 -- ⟪native-link-flags:end⟫
 
 package «typednotes-infra» where
-  version := v!"0.7.0"
+  version := v!"0.8.0"
   moreLinkArgs := nativeLinkArgs
 
 -- A tag rather than `main`. `Main.lean` hands the whole declaration to
@@ -187,15 +187,15 @@ lean_exe «typednotes-infra» where
 -/
 
 /-- `lake script run check` — same as `lake exe typednotes-infra check`. -/
-script check (_args) do
-  let out ← IO.Process.output { cmd := "lake", args := #["exe", "typednotes-infra", "check"] }
+script check args do
+  let out ← IO.Process.output { cmd := "lake", args := #["exe", "typednotes-infra", "check"] ++ args.toArray }
   IO.print out.stdout
   IO.eprint out.stderr
   return out.exitCode
 
 /-- `lake script run plan` — needs live credentials; see `main`'s `withLive`. -/
-script plan (_args) do
-  let out ← IO.Process.output { cmd := "lake", args := #["exe", "typednotes-infra", "plan"] }
+script plan args do
+  let out ← IO.Process.output { cmd := "lake", args := #["exe", "typednotes-infra", "plan"] ++ args.toArray }
   IO.print out.stdout
   IO.eprint out.stderr
   return out.exitCode

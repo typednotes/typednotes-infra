@@ -8,16 +8,47 @@ fleet. `infra` is the reusable engine, the provider backends, and the `plan`/`ap
 
 **This performs real, billable cloud actions and can create, modify, or delete real resources.**
 `check` never touches a network. `plan` pulls live state and prints what
-would change, but change nothing. `apply` is the only command that mutates anything — and
-only the resources named in `Fleet.lean`: a `(provider, kind)` pair not listed there, or a name
-not listed under a pair that is, has no key for the plan to mention and is left alone
-unconditionally.
+would change, but changes nothing. `apply` reconciles the selected fleet;
+`destroy` tears it down. Ownership markers scope both operations, including
+retiring resources removed from the declaration. Lite and full mode have
+independent markers and non-overlapping database prefixes.
+
+## Lite deployment (default)
+
+**Release 0.8.0** introduces the Lite deployment. See [the release notes](docs/release-0.8.0.md).
+
+CI **Apply**, **Plan**, **Destroy** and the local CLI default to **`lite`**.
+Lite builds the app, Ledger, Liaison, Secrets, Lode and Lun from pinned source
+releases into one image, then deploys **one warm Serverless Container and one
+Serverless SQL database**. All four migration histories share that database.
+The container has 4 vCPU / 8 GiB and exactly one instance; the Lean toolchain
+and warm package cache are shared by its workers.
+
+Select **`full`** in a workflow's `deployment` dropdown for the existing fleet
+described below. Locally:
+
+```sh
+lake exe typednotes-infra check                         # Lite, offline
+lake exe typednotes-infra plan                          # Lite, live read
+TYPEDNOTES_DEPLOYMENT=full lake exe typednotes-infra plan # existing full fleet
+```
+
+Lite needs no private network, compute database password or DB-inspector
+credentials. **Built-in PostgreSQL notebook connectors / `db` sinks are disabled**:
+Serverless SQL cannot create their per-user roles. Generation, stateless graph
+execution and vault-backed storage remain available. Worker disks are ephemeral.
+
+Lite has its own ownership marker and database (`lite-typednotes-db`). Choosing
+Lite creates an independent deployment; it does not migrate or delete the full
+fleet's data. Only one deployment can own the `app.typednotes.com` domain binding
+at a time. [Lite build, deployment and recovery instructions](docs/lite.md).
 
 ## What's declared
 
-[`Fleet.lean`](https://github.com/typednotes/typednotes-infra/blob/main/Fleet.lean) is the whole declaration: the `typednotes` system of
+[`Fleet/Lite.lean`](Fleet/Lite.lean) declares Lite.
+[`Fleet.lean`](https://github.com/typednotes/typednotes-infra/blob/main/Fleet.lean) declares the full fleet: the `typednotes` system of
 [`typednotes/typednotes`](https://github.com/typednotes/typednotes/tree/main)'s [`docs/architecture.md`](https://github.com/typednotes/typednotes/blob/main/docs/architecture.md),
-as far as it is built — 55 Scaleway resources in one apply.
+as far as it is built — 55 Scaleway resources in one **full-mode** apply.
 
 | Container | What | Database | Image |
 |---|---|---|---|
@@ -41,12 +72,13 @@ has only a private endpoint. The two IAM-protected Serverless SQL endpoints rema
 public by explicit choice. See [service access](docs/service-access.md) for the
 allowlist, private-network prerequisites and deployment checks.
 
-The local **0.7.0** declaration reads app schema **0.11.0** through `0015`
+The preceding **0.7.0** declaration adopted app schema **0.11.0** through `0015`
 for direct project notes, stateless execution, durable schedules and delivery
-outboxes. It targets **Lun 0.4.1**, **Lode 0.5.0** and **Linen 1.12.0**.
-App/writer/fleet release commits and annotated tags are local and unpublished; the breaking
-runtime transition requires draining old work and pausing old dispatch before
-the coordinated migration/rollout. See [the new rollout](docs/release-0.7.0.md).
+outboxes, targeting **Lun 0.4.1**, **Lode 0.5.0** and **Linen 1.12.0**.
+These schema histories remain in 0.8.0; Lite builds **Lun 0.4.2**. Upgrading
+from the older session-based runtime still requires draining old work and
+pausing old dispatch before the coordinated migration/rollout.
+See [the 0.7.0 rollout](docs/release-0.7.0.md).
 
 The earlier local **0.6.3** declaration reads app schema **0.10.0** through `0013`,
 and ledger schema **0.3.7** through `0003`, for organization/account deletion,
@@ -144,6 +176,9 @@ lake exe typednotes-infra apply  # actually reconcile — the only mutating comm
 lake exe typednotes-infra dump   # what the fleet sees in the account, as JSON (no secret values)
 ```
 
+These commands select Lite unless `TYPEDNOTES_DEPLOYMENT=full` is set. The
+remaining private-network and fleet details in this README describe full mode.
+
 Access, endpoint visibility and admin ingress are resource properties managed
 by Infra 0.23.0. `Main.lean` delegates directly to its CLI, with no networking
 script or additional apply hooks. The existing private network is a prerequisite
@@ -177,8 +212,10 @@ needs `default_project_id`.
 
 Everything this fleet needs from you, in one place. Set each as a **GitHub repository secret**
 (Settings → Secrets and variables → Actions) for CI, or export it under the **environment name**
-for a local `plan`/`apply`. `apply.yml` checks that all twenty-nine are non-empty before it touches
-anything, and names any that are missing.
+for a local `plan`/`apply`. `apply.yml` checks that the selected deployment's
+required values are non-empty before building or touching cloud resources,
+and names any that are missing. Lite requires twenty-six values; full mode
+also requires the compute DB password and the two inspector credentials.
 
 **Scaleway credentials** — read by every workflow (`plan.yml`, `apply.yml`, `destroy.yml`):
 
@@ -463,10 +500,14 @@ rather than as connections failing to store.
 
 ## CI
 
+All three workflows expose a `deployment` choice, defaulting to `lite`.
+Lite Apply builds/tests the combined source image before cloud reconciliation;
+full Apply uses the existing service images. See [the Lite CI sequence](docs/lite.md#ci-deployment).
+
 Three workflows, split so that nothing which changes a cloud can be reached from a commit.
 
 **`plan.yml`** runs `check` on pushes to `main` and pull requests targeting `main`, and additionally posts a live `plan`
-to the run summary on pushes to `main`. It never applies.
+to the run summary on pushes to `main` and manual dispatches on `main`. It never applies.
 
 **`apply.yml`** is the manual apply. Its only trigger is `workflow_dispatch` — there is no push
 trigger to mis-condition — and it asks you to type `typednotes` to confirm. It runs the offline
@@ -510,8 +551,8 @@ secret that was not a secret, and having it there meant CI could quietly run aga
 other than the `fr-par` in the container image's own URL — the account guard checks the
 organization, not the place. The secret can be deleted; leaving it set does nothing.
 
-`apply.yml` checks all twenty-nine are non-empty **before** it touches anything, and names the missing
-ones. That matters for the twenty-five `fromEnv` values in particular: they are not credentials, so
+`apply.yml` checks the selected mode's required secrets **before** it builds or touches cloud resources,
+and names the missing ones. That matters for `fromEnv` values in particular: they are not credentials, so
 nothing else would notice they were absent until the backend tried to create that secret —
 which is after the database already exists, leaving a half-applied fleet.
 

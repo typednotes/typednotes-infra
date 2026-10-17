@@ -1,30 +1,24 @@
 name: Apply
 
-# `workflow_dispatch` is the ONLY trigger, deliberately. Keeping apply in its
-# own file — rather than as a job in `plan.yml`, which runs on every push —
-# means there is no `if:` condition standing between a push and a live
-# reconcile: the trigger simply does not exist. A mis-edited condition cannot
-# turn a commit into a deployment.
-#
-# Three further gates, in order:
-#   1. `confirm` must be typed exactly. A dropdown or a bare "Run workflow"
-#      button is one click; typing the fleet's name is a decision.
-#   2. `environment:` lets the repo owner require a reviewer in Settings →
-#      Environments. That is the only gate this file cannot enforce by itself,
-#      and the one worth adding.
-#   3. The plan is printed and kept in the log immediately before the apply,
-#      so what was applied is recoverable afterwards.
+# Only a manual dispatch can mutate cloud resources. Both modes use the same
+# concurrency group as Destroy, and keep the exact pre-apply plan in the log.
 on:
   workflow_dispatch:
     inputs:
+      deployment:
+        description: Deployment architecture
+        required: true
+        type: choice
+        default: lite
+        options: [lite, full]
       confirm:
-        description: 'Type "typednotes" to confirm a live apply'
+        description: 'Type "typednotes" to confirm a live apply of the selected deployment'
         required: true
         type: string
 
-# Two applies at once would race on the same resources; the second waits
-# rather than being cancelled, because cancelling mid-apply is worse than
-# queueing.
+permissions:
+  contents: read
+
 concurrency:
   group: apply-typednotes
   cancel-in-progress: false
@@ -32,278 +26,131 @@ concurrency:
 jobs:
   apply:
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     if: inputs.confirm == 'typednotes'
-    # Add required reviewers to this environment in the repo settings to make
-    # every apply need a second pair of eyes. Scaleway secrets can also be
-    # scoped to it, so a plan run cannot reach apply-only credentials.
     environment: production
+    permissions:
+      contents: read
+      packages: write
+    env:
+      TYPEDNOTES_DEPLOYMENT: ${{ inputs.deployment }}
+      SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
+      SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
+      SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
+      SCW_DEFAULT_ORGANIZATION_ID: ${{ secrets.SCW_DEFAULT_ORGANIZATION_ID }}
+      SECRETS_MASTER_KEY: ${{ secrets.SECRETS_MASTER_KEY }}
+      SECRETS_BOOTSTRAP_PASSWORD: ${{ secrets.SECRETS_BOOTSTRAP_PASSWORD }}
+      LIAISON_ROOT_KEY: ${{ secrets.LIAISON_ROOT_KEY }}
+      APP_SECRETS_PASSWORD: ${{ secrets.APP_SECRETS_PASSWORD }}
+      LIAISON_SECRETS_PASSWORD: ${{ secrets.LIAISON_SECRETS_PASSWORD }}
+      LUN_SECRETS_PASSWORD: ${{ secrets.LUN_SECRETS_PASSWORD }}
+      LODE_TOKEN: ${{ secrets.LODE_TOKEN }}
+      LUN_TOKEN: ${{ secrets.LUN_TOKEN }}
+      LUN_ID_SALT: ${{ secrets.LUN_ID_SALT }}
+      COMPUTE_DB_PASSWORD: ${{ secrets.COMPUTE_DB_PASSWORD }}
+      GITHUB_CLIENT_ID: ${{ secrets.OAUTH_GITHUB_CLIENT_ID }}
+      GITHUB_CLIENT_SECRET: ${{ secrets.OAUTH_GITHUB_CLIENT_SECRET }}
+      GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+      GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+      GITLAB_CLIENT_ID: ${{ secrets.GITLAB_CLIENT_ID }}
+      GITLAB_CLIENT_SECRET: ${{ secrets.GITLAB_CLIENT_SECRET }}
+      DROPBOX_CLIENT_ID: ${{ secrets.DROPBOX_CLIENT_ID }}
+      DROPBOX_CLIENT_SECRET: ${{ secrets.DROPBOX_CLIENT_SECRET }}
+      SLACK_CLIENT_ID: ${{ secrets.SLACK_CLIENT_ID }}
+      SLACK_CLIENT_SECRET: ${{ secrets.SLACK_CLIENT_SECRET }}
+      SLACK_SIGNING_SECRET: ${{ secrets.SLACK_SIGNING_SECRET }}
+      WHATSAPP_APP_SECRET: ${{ secrets.WHATSAPP_APP_SECRET }}
+      WHATSAPP_VERIFY_TOKEN: ${{ secrets.WHATSAPP_VERIFY_TOKEN }}
+      DB_INSPECTOR_USERNAME: ${{ secrets.DB_INSPECTOR_USERNAME }}
+      DB_INSPECTOR_PASSWORD: ${{ secrets.DB_INSPECTOR_PASSWORD }}
     steps:
       - uses: actions/checkout@v7.0.1
-      # Same native FFI dependency set as `plan.yml`, for the same reason:
-      # `Infra` pulls in all of Linen's `extern_lib`, not just the parts this
-      # fleet touches.
+        with:
+          persist-credentials: false
       - name: Install native FFI dependencies
         run: sudo apt-get update && sudo apt-get install -y libpq-dev libssl-dev libsecret-1-dev pkg-config ca-certificates
       - uses: leanprover/lean-action@v1.6.0
-      # Lean's toolchain bundles a *static* OpenSSL whose compile-time
-      # `OPENSSLDIR` points at whatever machine built it, so on a fresh runner
-      # there is no trust store and every certificate fails to verify with
-      # "certificate verify failed". `SSL_CTX_set_default_verify_paths` — which
-      # is what Linen's TLS client calls — honours these two variables, so this
-      # points it at the runner's own bundle. See `infra`'s
-      # `docs/authentication.md`.
       - name: Point OpenSSL at the runner's CA bundle
         run: |
-          for f in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt; do
-            if [ -f "$f" ]; then echo "SSL_CERT_FILE=$f" >> "$GITHUB_ENV"; break; fi
-          done
+          echo "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt" >> "$GITHUB_ENV"
           echo "SSL_CERT_DIR=/etc/ssl/certs" >> "$GITHUB_ENV"
-
-      # Offline, credential-free, and first: if the declared fleet does not
-      # even satisfy its own checks, nothing should reach a cloud.
-      - name: Run offline self-checks
-        run: lake exe typednotes-infra check
-
-      # Fail before touching anything if a required secret is missing.
-      #
-      # Not redundant with `infra`'s own credential error. The `SECRETS_*`
-      # value is not a deploy credential — they are the values behind `Fleet.lean`'s
-      # `fromEnv` secrets, read when each secret is *created* and, under
-      # `--refresh-secrets`, compared on every run. A missing one fails partway
-      # through,
-      # after the database already exists, leaving a half-applied fleet to
-      # clean up by hand. Checking here turns that into a five-second failure
-      # that names the variable.
-      #
-      # Only emptiness is tested; no value is printed. An undefined GitHub
-      # secret arrives as the empty string, which is exactly the case that
-      # previously slipped through as an unexplained TLS error.
-      - name: Check required secrets are present
-        env:
-          SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
-          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
-          SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
-          SCW_DEFAULT_ORGANIZATION_ID: ${{ secrets.SCW_DEFAULT_ORGANIZATION_ID }}
-          SECRETS_MASTER_KEY: ${{ secrets.SECRETS_MASTER_KEY }}
-          SECRETS_BOOTSTRAP_PASSWORD: ${{ secrets.SECRETS_BOOTSTRAP_PASSWORD }}
-          LIAISON_ROOT_KEY: ${{ secrets.LIAISON_ROOT_KEY }}
-          APP_SECRETS_PASSWORD: ${{ secrets.APP_SECRETS_PASSWORD }}
-          LIAISON_SECRETS_PASSWORD: ${{ secrets.LIAISON_SECRETS_PASSWORD }}
-          LUN_SECRETS_PASSWORD: ${{ secrets.LUN_SECRETS_PASSWORD }}
-          LODE_TOKEN: ${{ secrets.LODE_TOKEN }}
-          LUN_TOKEN: ${{ secrets.LUN_TOKEN }}
-          LUN_ID_SALT: ${{ secrets.LUN_ID_SALT }}
-          COMPUTE_DB_PASSWORD: ${{ secrets.COMPUTE_DB_PASSWORD }}
-          GITHUB_CLIENT_ID: ${{ secrets.OAUTH_GITHUB_CLIENT_ID }}
-          GITHUB_CLIENT_SECRET: ${{ secrets.OAUTH_GITHUB_CLIENT_SECRET }}
-          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
-          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
-          GITLAB_CLIENT_ID: ${{ secrets.GITLAB_CLIENT_ID }}
-          GITLAB_CLIENT_SECRET: ${{ secrets.GITLAB_CLIENT_SECRET }}
-          DROPBOX_CLIENT_ID: ${{ secrets.DROPBOX_CLIENT_ID }}
-          DROPBOX_CLIENT_SECRET: ${{ secrets.DROPBOX_CLIENT_SECRET }}
-          SLACK_CLIENT_ID: ${{ secrets.SLACK_CLIENT_ID }}
-          SLACK_CLIENT_SECRET: ${{ secrets.SLACK_CLIENT_SECRET }}
-          SLACK_SIGNING_SECRET: ${{ secrets.SLACK_SIGNING_SECRET }}
-          WHATSAPP_APP_SECRET: ${{ secrets.WHATSAPP_APP_SECRET }}
-          WHATSAPP_VERIFY_TOKEN: ${{ secrets.WHATSAPP_VERIFY_TOKEN }}
-          DB_INSPECTOR_USERNAME: ${{ secrets.DB_INSPECTOR_USERNAME }}
-          DB_INSPECTOR_PASSWORD: ${{ secrets.DB_INSPECTOR_PASSWORD }}
+      - name: Run both fleets' offline checks and Lite supervisor tests
         run: |
-          missing=()
-          for v in SCW_ACCESS_KEY SCW_SECRET_KEY \
-                   SCW_DEFAULT_PROJECT_ID SCW_DEFAULT_ORGANIZATION_ID \
-                   SECRETS_MASTER_KEY SECRETS_BOOTSTRAP_PASSWORD \
-                    LIAISON_ROOT_KEY APP_SECRETS_PASSWORD LIAISON_SECRETS_PASSWORD \
-                    LUN_SECRETS_PASSWORD LODE_TOKEN LUN_TOKEN LUN_ID_SALT COMPUTE_DB_PASSWORD \
-                   GITHUB_CLIENT_ID GITHUB_CLIENT_SECRET \
-                   GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET \
-                   GITLAB_CLIENT_ID GITLAB_CLIENT_SECRET \
-                   DROPBOX_CLIENT_ID DROPBOX_CLIENT_SECRET \
-                   SLACK_CLIENT_ID SLACK_CLIENT_SECRET SLACK_SIGNING_SECRET \
-                   WHATSAPP_APP_SECRET WHATSAPP_VERIFY_TOKEN \
-                   DB_INSPECTOR_USERNAME DB_INSPECTOR_PASSWORD; do
-            [ -n "${!v}" ] || missing+=("$v")
-          done
-          if [ ${#missing[@]} -ne 0 ]; then
-            echo "Missing repo secrets: ${missing[*]}" >&2
-            echo "Add them under Settings -> Secrets and variables -> Actions." >&2
-            exit 1
-          fi
-          echo "All required secrets are present."
-          # Fail before cloud creation if the RDB password violates its API contract.
-          if [[ ${#COMPUTE_DB_PASSWORD} -lt 8 || ${#COMPUTE_DB_PASSWORD} -gt 128 ||
-                ! "$COMPUTE_DB_PASSWORD" =~ [[:upper:]] || ! "$COMPUTE_DB_PASSWORD" =~ [[:lower:]] ||
-                ! "$COMPUTE_DB_PASSWORD" =~ [[:digit:]] || ! "$COMPUTE_DB_PASSWORD" =~ [^[:alnum:]] ]]; then
-            echo "COMPUTE_DB_PASSWORD must contain 8–128 characters including uppercase, lowercase, a digit and a special character." >&2
-            exit 1
-          fi
-          for v in LODE_TOKEN LUN_TOKEN LUN_ID_SALT LUN_SECRETS_PASSWORD; do
-            value="${!v}"
-            if [[ ${#value} -lt 32 ]]; then
-              echo "$v must contain at least 32 characters." >&2
-              exit 1
-            fi
-          done
+          TYPEDNOTES_DEPLOYMENT=lite lake exe typednotes-infra check
+          TYPEDNOTES_DEPLOYMENT=full lake exe typednotes-infra check
+          python3 -m unittest discover -s lite/tests -v
+      - name: Check selected deployment's required secrets
+        run: bash scripts/check-deployment-secrets.sh
 
-      # Scaleway only — `Infra.Cli` authenticates just the clouds the fleet
-      # declares into, so no AWS secrets are needed or read.
-      #
-      # `SECRETS_MASTER_KEY` and `SECRETS_BOOTSTRAP_PASSWORD` are the values
-      # the two `fromEnv` secrets in `Fleet.lean` read. The second is the
-      # password for the server's initial `admin` user: without it the
-      # container starts with no users and nothing can log in.
-      #
-      # `LIAISON_ROOT_KEY`, the two vault service passwords, the ten OAuth
-      # client values (GitHub, Google, GitLab, Dropbox, Slack), the Slack
-      # signing secret, the two WhatsApp webhook values,
-      # `DB_INSPECTOR_USERNAME` and `DB_INSPECTOR_PASSWORD` are
-      # the other `fromEnv` secrets, read the same way. GitHub refuses repo
-      # secrets named `GITHUB_*`, so the
-      # GitHub OAuth client is stored as `OAUTH_GITHUB_CLIENT_{ID,SECRET}` and
-      # exported under the names `Fleet.lean` reads. The two vault passwords
-      # go to the vault too, which creates both service users on start.
-      #
-      # There is deliberately no database credential here. Serverless SQL
-      # Database authenticates through IAM, and `apiKeyFor` mints a key at
-      # apply time for each of the three identities `Fleet.lean` declares
-      # (migrator, observer, runtime) — so no credential exists outside the
-      # cloud, and the six composed database URLs are built by the engine and
-      # never supplied here.
-      #
-      # `--refresh-secrets` (infra >= 0.18.0), on the plan, the apply and the
-      # convergence check alike: every `fromEnv` secret is compared with the
-      # repo secret above and every composed URL with its recipe, and the ones
-      # that differ are rewritten — then every container holding a copy is
-      # updated. So **these repo secrets are the source of truth on every
-      # apply**, not only at creation: changing one here changes it in the
-      # cloud on the next apply, and a value set by hand in Scaleway is
-      # overwritten. That includes `SECRETS_MASTER_KEY`, which encrypts the
-      # vault: check the plan's `refresh-secrets:` lines before approving.
-      # Hence the variables on all three steps — comparing needs the values.
-      # The minted database keys are never rotated by this; see infra's
-      # docs/coverage.md.
+      # Bake builds all six services from pinned source tags, using their own
+      # Dockerfiles. Only the final assembled image is loaded and published.
+      - name: Set up Docker Buildx
+        if: inputs.deployment == 'lite'
+        uses: docker/setup-buildx-action@v4
+        with:
+          buildkitd-config-inline: |
+            [worker.oci]
+              max-parallelism = 2
+      - name: Export the authored Lite smoke configuration
+        if: inputs.deployment == 'lite'
+        run: |
+          lake env lean --run scripts/lite-config.lean > "$RUNNER_TEMP/lite-config.json"
+          docker buildx bake -f lite/docker-bake.hcl --print > "$RUNNER_TEMP/lite-bake.json"
+          python3 lite/check-build.py "$RUNNER_TEMP/lite-config.json" "$RUNNER_TEMP/lite-bake.json"
+          echo "LITE_IMAGE=ghcr.io/typednotes/typednotes-lite:ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
+      - name: Build all services and assemble Lite
+        if: inputs.deployment == 'lite'
+        uses: docker/bake-action@v7
+        with:
+          source: .
+          files: lite/docker-bake.hcl
+          targets: lite
+          set: lite.output=type=docker
+      - name: Smoke test the combined image against disposable PostgreSQL
+        if: inputs.deployment == 'lite'
+        run: python3 lite/check-image.py "$LITE_IMAGE" "$RUNNER_TEMP/lite-config.json"
+      - name: Log in to GHCR
+        if: inputs.deployment == 'lite'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Publish the tested image and freeze its deployment digest
+        if: inputs.deployment == 'lite'
+        run: |
+          set -euo pipefail
+          docker push "$LITE_IMAGE"
+          image=$(docker image inspect "$LITE_IMAGE" | jq -er '.[0].RepoDigests[] | select(startswith("ghcr.io/typednotes/typednotes-lite@sha256:"))')
+          echo "TYPEDNOTES_LITE_IMAGE=$image" >> "$GITHUB_ENV"
+          docker tag "$LITE_IMAGE" ghcr.io/typednotes/typednotes-lite:latest
+          docker push ghcr.io/typednotes/typednotes-lite:latest
+          # Infra and Scaleway pull anonymously. New GHCR packages need a
+          # one-time public-visibility change; catch that before cloud creation.
+          token=$(curl -fsS 'https://ghcr.io/token?service=ghcr.io&scope=repository:typednotes/typednotes-lite:pull' | jq -er .token)
+          curl -fsSI -H "Authorization: Bearer $token" \
+            -H 'Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
+            "https://ghcr.io/v2/typednotes/typednotes-lite/manifests/${image##*@}" > /dev/null
+          echo "### Tested Lite image: $image" >> "$GITHUB_STEP_SUMMARY"
+
+      # One environment and one immutable image reference for all three calls.
+      # Pipefail prevents tee from hiding a failed plan.
       - name: Plan
-        env:
-          SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
-          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
-          SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
-          SCW_DEFAULT_ORGANIZATION_ID: ${{ secrets.SCW_DEFAULT_ORGANIZATION_ID }}
-          SECRETS_MASTER_KEY: ${{ secrets.SECRETS_MASTER_KEY }}
-          SECRETS_BOOTSTRAP_PASSWORD: ${{ secrets.SECRETS_BOOTSTRAP_PASSWORD }}
-          LIAISON_ROOT_KEY: ${{ secrets.LIAISON_ROOT_KEY }}
-          APP_SECRETS_PASSWORD: ${{ secrets.APP_SECRETS_PASSWORD }}
-          LIAISON_SECRETS_PASSWORD: ${{ secrets.LIAISON_SECRETS_PASSWORD }}
-          LUN_SECRETS_PASSWORD: ${{ secrets.LUN_SECRETS_PASSWORD }}
-          LODE_TOKEN: ${{ secrets.LODE_TOKEN }}
-          LUN_TOKEN: ${{ secrets.LUN_TOKEN }}
-          LUN_ID_SALT: ${{ secrets.LUN_ID_SALT }}
-          COMPUTE_DB_PASSWORD: ${{ secrets.COMPUTE_DB_PASSWORD }}
-          GITHUB_CLIENT_ID: ${{ secrets.OAUTH_GITHUB_CLIENT_ID }}
-          GITHUB_CLIENT_SECRET: ${{ secrets.OAUTH_GITHUB_CLIENT_SECRET }}
-          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
-          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
-          GITLAB_CLIENT_ID: ${{ secrets.GITLAB_CLIENT_ID }}
-          GITLAB_CLIENT_SECRET: ${{ secrets.GITLAB_CLIENT_SECRET }}
-          DROPBOX_CLIENT_ID: ${{ secrets.DROPBOX_CLIENT_ID }}
-          DROPBOX_CLIENT_SECRET: ${{ secrets.DROPBOX_CLIENT_SECRET }}
-          SLACK_CLIENT_ID: ${{ secrets.SLACK_CLIENT_ID }}
-          SLACK_CLIENT_SECRET: ${{ secrets.SLACK_CLIENT_SECRET }}
-          SLACK_SIGNING_SECRET: ${{ secrets.SLACK_SIGNING_SECRET }}
-          WHATSAPP_APP_SECRET: ${{ secrets.WHATSAPP_APP_SECRET }}
-          WHATSAPP_VERIFY_TOKEN: ${{ secrets.WHATSAPP_VERIFY_TOKEN }}
-          DB_INSPECTOR_USERNAME: ${{ secrets.DB_INSPECTOR_USERNAME }}
-          DB_INSPECTOR_PASSWORD: ${{ secrets.DB_INSPECTOR_PASSWORD }}
         run: |
-          # `{ … } | tee` exits with tee's status, and Actions' `bash -e` does
-          # not set pipefail — so without this a failing `plan` reports green
-          # and `apply` runs anyway. That is exactly what happened on run
-          # 35595747955: the plan hit a 403 on IAM, the step passed, and the
-          # failure only surfaced one step later in `apply`.
           set -o pipefail
           {
-            echo '### Plan being applied'
+            echo "### Plan being applied ($TYPEDNOTES_DEPLOYMENT)"
             echo '```'
             lake exe typednotes-infra plan --refresh-secrets
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
-
-      # The mutating step. Goes through the `apply` script rather than
-      # `lake exe ... apply` so the `--yes` refusal is exercised by the
-      # same path a human uses locally — one command with one meaning, not two
-      # spellings that can drift apart.
       - name: Apply
-        env:
-          SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
-          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
-          SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
-          SCW_DEFAULT_ORGANIZATION_ID: ${{ secrets.SCW_DEFAULT_ORGANIZATION_ID }}
-          SECRETS_MASTER_KEY: ${{ secrets.SECRETS_MASTER_KEY }}
-          SECRETS_BOOTSTRAP_PASSWORD: ${{ secrets.SECRETS_BOOTSTRAP_PASSWORD }}
-          LIAISON_ROOT_KEY: ${{ secrets.LIAISON_ROOT_KEY }}
-          APP_SECRETS_PASSWORD: ${{ secrets.APP_SECRETS_PASSWORD }}
-          LIAISON_SECRETS_PASSWORD: ${{ secrets.LIAISON_SECRETS_PASSWORD }}
-          LUN_SECRETS_PASSWORD: ${{ secrets.LUN_SECRETS_PASSWORD }}
-          LODE_TOKEN: ${{ secrets.LODE_TOKEN }}
-          LUN_TOKEN: ${{ secrets.LUN_TOKEN }}
-          LUN_ID_SALT: ${{ secrets.LUN_ID_SALT }}
-          COMPUTE_DB_PASSWORD: ${{ secrets.COMPUTE_DB_PASSWORD }}
-          GITHUB_CLIENT_ID: ${{ secrets.OAUTH_GITHUB_CLIENT_ID }}
-          GITHUB_CLIENT_SECRET: ${{ secrets.OAUTH_GITHUB_CLIENT_SECRET }}
-          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
-          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
-          GITLAB_CLIENT_ID: ${{ secrets.GITLAB_CLIENT_ID }}
-          GITLAB_CLIENT_SECRET: ${{ secrets.GITLAB_CLIENT_SECRET }}
-          DROPBOX_CLIENT_ID: ${{ secrets.DROPBOX_CLIENT_ID }}
-          DROPBOX_CLIENT_SECRET: ${{ secrets.DROPBOX_CLIENT_SECRET }}
-          SLACK_CLIENT_ID: ${{ secrets.SLACK_CLIENT_ID }}
-          SLACK_CLIENT_SECRET: ${{ secrets.SLACK_CLIENT_SECRET }}
-          SLACK_SIGNING_SECRET: ${{ secrets.SLACK_SIGNING_SECRET }}
-          WHATSAPP_APP_SECRET: ${{ secrets.WHATSAPP_APP_SECRET }}
-          WHATSAPP_VERIFY_TOKEN: ${{ secrets.WHATSAPP_VERIFY_TOKEN }}
-          DB_INSPECTOR_USERNAME: ${{ secrets.DB_INSPECTOR_USERNAME }}
-          DB_INSPECTOR_PASSWORD: ${{ secrets.DB_INSPECTOR_PASSWORD }}
         run: lake script run apply --yes --refresh-secrets
-
-      # What the account looks like afterwards. A clean apply leaves nothing
-      # outstanding, so this should print "nothing to do" — and if it does not,
-      # the log says what is still unreconciled instead of leaving it to be
-      # discovered on the next run.
       - name: Verify convergence
-        env:
-          SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
-          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
-          SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
-          SCW_DEFAULT_ORGANIZATION_ID: ${{ secrets.SCW_DEFAULT_ORGANIZATION_ID }}
-          SECRETS_MASTER_KEY: ${{ secrets.SECRETS_MASTER_KEY }}
-          SECRETS_BOOTSTRAP_PASSWORD: ${{ secrets.SECRETS_BOOTSTRAP_PASSWORD }}
-          LIAISON_ROOT_KEY: ${{ secrets.LIAISON_ROOT_KEY }}
-          APP_SECRETS_PASSWORD: ${{ secrets.APP_SECRETS_PASSWORD }}
-          LIAISON_SECRETS_PASSWORD: ${{ secrets.LIAISON_SECRETS_PASSWORD }}
-          LUN_SECRETS_PASSWORD: ${{ secrets.LUN_SECRETS_PASSWORD }}
-          LODE_TOKEN: ${{ secrets.LODE_TOKEN }}
-          LUN_TOKEN: ${{ secrets.LUN_TOKEN }}
-          LUN_ID_SALT: ${{ secrets.LUN_ID_SALT }}
-          COMPUTE_DB_PASSWORD: ${{ secrets.COMPUTE_DB_PASSWORD }}
-          GITHUB_CLIENT_ID: ${{ secrets.OAUTH_GITHUB_CLIENT_ID }}
-          GITHUB_CLIENT_SECRET: ${{ secrets.OAUTH_GITHUB_CLIENT_SECRET }}
-          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
-          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
-          GITLAB_CLIENT_ID: ${{ secrets.GITLAB_CLIENT_ID }}
-          GITLAB_CLIENT_SECRET: ${{ secrets.GITLAB_CLIENT_SECRET }}
-          DROPBOX_CLIENT_ID: ${{ secrets.DROPBOX_CLIENT_ID }}
-          DROPBOX_CLIENT_SECRET: ${{ secrets.DROPBOX_CLIENT_SECRET }}
-          SLACK_CLIENT_ID: ${{ secrets.SLACK_CLIENT_ID }}
-          SLACK_CLIENT_SECRET: ${{ secrets.SLACK_CLIENT_SECRET }}
-          SLACK_SIGNING_SECRET: ${{ secrets.SLACK_SIGNING_SECRET }}
-          WHATSAPP_APP_SECRET: ${{ secrets.WHATSAPP_APP_SECRET }}
-          WHATSAPP_VERIFY_TOKEN: ${{ secrets.WHATSAPP_VERIFY_TOKEN }}
-          DB_INSPECTOR_USERNAME: ${{ secrets.DB_INSPECTOR_USERNAME }}
-          DB_INSPECTOR_PASSWORD: ${{ secrets.DB_INSPECTOR_PASSWORD }}
         run: |
           set -o pipefail
           {
-            echo '### State after apply'
+            echo "### State after apply ($TYPEDNOTES_DEPLOYMENT)"
             echo '```'
             lake exe typednotes-infra plan --refresh-secrets
             echo '```'
