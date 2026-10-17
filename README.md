@@ -15,14 +15,15 @@ independent markers and non-overlapping database prefixes.
 
 ## Lite deployment (default)
 
-**Release 0.8.0** introduces the Lite deployment. See [the release notes](docs/release-0.8.0.md).
+**Release 0.9.0** adds the self-contained Local image and automatic, newest-service
+builds for both combined images. See [the release notes](docs/release-0.9.0.md).
 
 CI **Apply**, **Plan**, **Destroy** and the local CLI default to **`lite`**.
-Lite builds the app, Ledger, Liaison, Secrets, Lode and Lun from pinned source
-releases into one image, then deploys **one warm Serverless Container and one
+Lite builds the app, Ledger, Liaison, Secrets, Lode and Lun from their newest
+stable release tags (frozen to commits per build), then deploys **one warm Serverless Container and one
 Serverless SQL database**. All four migration histories share that database.
-The container has 4 vCPU / 8 GiB and exactly one instance; the Lean toolchain
-and warm package cache are shared by its workers.
+The container has 4 vCPU / 8 GiB and exactly one instance; Lean toolchain
+installations are deduplicated and worker package caches stay service-specific.
 
 Select **`full`** in a workflow's `deployment` dropdown for the existing fleet
 described below. Locally:
@@ -42,6 +43,26 @@ Lite has its own ownership marker and database (`lite-typednotes-db`). Choosing
 Lite creates an independent deployment; it does not migrate or delete the full
 fleet's data. Only one deployment can own the `app.typednotes.com` domain binding
 at a time. [Lite build, deployment and recovery instructions](docs/lite.md).
+
+## Local: everything in one image
+
+[Typednotes Local](local/README.md) adds PostgreSQL to the same service image.
+Launch it against a dedicated directory; internal credentials and data are
+initialized and persisted automatically:
+
+```sh
+local/run.sh ./typednotes-data
+```
+
+The launcher prefers **Podman**, with Docker available through `--engine docker`,
+and publishes only `http://localhost:8080`. Local supports built-in compute DB
+sinks using a separate logical database on the same bundled PostgreSQL server.
+Human sign-in still needs an OAuth client configured for localhost.
+
+Both image variants use the same newest service releases. The
+[Combined images workflow](.github/workflows/images.yml) checks all six repositories
+every fifteen minutes and rebuilds both multi-platform images when a version
+changes. [Build, schema-alignment and trigger details](images/README.md).
 
 ## What's declared
 
@@ -75,8 +96,10 @@ allowlist, private-network prerequisites and deployment checks.
 The preceding **0.7.0** declaration adopted app schema **0.11.0** through `0015`
 for direct project notes, stateless execution, durable schedules and delivery
 outboxes, targeting **Lun 0.4.1**, **Lode 0.5.0** and **Linen 1.12.0**.
-These schema histories remain in 0.8.0; Lite builds **Lun 0.4.2**. Upgrading
-from the older session-based runtime still requires draining old work and
+Full mode retains these schema histories; the **0.8.0** Lite bundle used
+**Lun 0.4.2**. Since **0.9.0**, Lite and Local resolve the newest stable service
+tags when building and carry their matching migrations. Upgrading from the
+older session-based runtime still requires draining old work and
 pausing old dispatch before the coordinated migration/rollout.
 See [the 0.7.0 rollout](docs/release-0.7.0.md).
 
@@ -500,11 +523,13 @@ rather than as connections failing to store.
 
 ## CI
 
-All three workflows expose a `deployment` choice, defaulting to `lite`.
-Lite Apply builds/tests the combined source image before cloud reconciliation;
-full Apply uses the existing service images. See [the Lite CI sequence](docs/lite.md#ci-deployment).
+Apply, Plan and Destroy expose a `deployment` choice, defaulting to `lite`.
+Lite Apply reuses the Combined images publisher and deploys its immutable digest
+with matching SQL. Full Apply uses the existing service images.
+See [the Lite CI sequence](docs/lite.md#ci-deployment).
 
-Three workflows, split so that nothing which changes a cloud can be reached from a commit.
+Cloud reconciliation/teardown stay manual. The separate Combined images workflow
+automatically builds and publishes images on service-version or packaging changes.
 
 **`plan.yml`** runs `check` on pushes to `main` and pull requests targeting `main`, and additionally posts a live `plan`
 to the run summary on pushes to `main` and manual dispatches on `main`. It never applies.

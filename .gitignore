@@ -1,2 +1,6 @@
 .lake/
 __pycache__/
+.images/
+typednotes-data/
+local.env
+.env

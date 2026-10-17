@@ -2,8 +2,9 @@ import Fleet.Lite
 
 open Infra.Core Infra.Specs
 
-/-- Smoke tests consume the real declaration, not a second list of SQL files
-    or vault policies. This export is offline and contains no secret values. -/
+/-- Export proof-checked vault policies and baseline schema metadata for
+    offline correspondence checks. Images carry their resolved-release SQL
+    separately. This export contains no secret values. -/
 def main : IO Unit := do
   let migrations := appMigrations ++ ledgerMigrations ++ liaisonMigrations ++ secretsMigrations
   let urls := migrations.filterMap fun migration => match migration.source with

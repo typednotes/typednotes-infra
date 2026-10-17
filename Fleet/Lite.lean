@@ -164,6 +164,51 @@ def typednotesLiteWithImage (image : String) : Fleet where
   regions := typednotesLite.regions
   forgets := typednotesLite.forgets
 
+/-- The registry boundary supplies the SQL that was bundled with this exact
+    image, after verifying manifest, source commit and content digests. -/
+structure LiteSqlMigration where
+  id : String
+  sql : String
+  deriving Lean.FromJson
+
+structure LiteSqlHistory where
+  schema : String
+  migrations : List LiteSqlMigration
+  deriving Lean.FromJson
+
+structure LiteDeployment where
+  image : String
+  vaultIdentities : String
+  histories : List LiteSqlHistory
+  deriving Lean.FromJson
+
+private def deployedPlan (deployment : LiteDeployment) : Plan typednotesLite.keys where
+  assign
+    | .scaleway, .postgresMigrations, key =>
+      match typednotesLite.plan.assign .scaleway .postgresMigrations key with
+      | .present spec =>
+        let schema := spec.schema.asLit.getD ""
+        let migrations := (deployment.histories.find? (·.schema == schema)).toList.flatMap fun history =>
+          history.migrations.map fun migration =>
+            ({ id := migration.id, source := .text migration.sql } : MigrationDecl)
+        .present { spec with migrations := .lit migrations }
+      | other => other
+    | .scaleway, .scalewayContainer, key =>
+      match (litePlanWithImage deployment.image).assign .scaleway .scalewayContainer key with
+      | .present spec => .present { spec with env := .known (.lit
+          [("PUBLIC_URL", appPublicUrl), ("SECRETS_SERVER_SERVICE_IDENTITIES", deployment.vaultIdentities),
+           ("LUN_WORKERS", "1")]) }
+      | other => other
+    | p, k, key => typednotesLite.plan.assign p k key
+
+def typednotesLiteDeployed (deployment : LiteDeployment) : Except String Fleet := do
+  unless deployment.histories.map (·.schema) == ["core", "ledger", "liaison", "secrets"] do
+    throw "Lite image must supply exactly the four migration histories"
+  let plan := deployedPlan deployment
+  unless plan.migrationsAreSound do throw "Lite image supplies an invalid migration history"
+  return { name := typednotesLite.name, keys := typednotesLite.keys, plan := plan
+         , regions := typednotesLite.regions, forgets := typednotesLite.forgets }
+
 #guard typednotesLite.keys.count .scaleway .scalewayContainer = 1
 #guard typednotesLite.keys.count .scaleway .postgres = 1
 #guard typednotesLite.keys.count .scaleway .postgresMigrations = 4
