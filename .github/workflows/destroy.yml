@@ -31,6 +31,12 @@ name: Destroy
 on:
   workflow_dispatch:
     inputs:
+      deployment:
+        description: Deployment architecture to destroy
+        required: true
+        type: choice
+        default: lite
+        options: [lite, full]
       confirm:
         description: 'Type "destroy typednotes" (or, with the box below ticked, "destroy typednotes and its data")'
         required: true
@@ -60,6 +66,7 @@ jobs:
     # `--keep-data` always.) Every teardown command below takes it, so the
     # preview, the teardown and the check cannot disagree.
     env:
+      TYPEDNOTES_DEPLOYMENT: ${{ inputs.deployment }}
       KEEP_DATA: ${{ !inputs.destroy_databases && '--keep-data' || '' }}
     steps:
       - uses: actions/checkout@v7.0.1
@@ -125,7 +132,7 @@ jobs:
           # See apply.yml: tee would otherwise mask a failing plan.
           set -o pipefail
           {
-            echo '### About to destroy'
+            echo "### About to destroy ($TYPEDNOTES_DEPLOYMENT)"
             echo '```'
             # shellcheck disable=SC2086 # empty, or one flag
             lake exe typednotes-infra plan --destroy $KEEP_DATA
@@ -157,7 +164,7 @@ jobs:
           # See apply.yml: tee would otherwise mask a failing plan.
           set -o pipefail
           {
-            echo '### State after destroy'
+            echo "### State after destroy ($TYPEDNOTES_DEPLOYMENT)"
             echo '```'
             # shellcheck disable=SC2086 # empty, or one flag
             lake exe typednotes-infra plan --destroy $KEEP_DATA

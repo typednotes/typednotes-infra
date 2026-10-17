@@ -1,6 +1,7 @@
-import Fleet
+import Fleet.Lite
 
 open Infra.Core
+open Lite
 
 /-- The accounts this fleet is for.
 
@@ -27,6 +28,10 @@ def accounts : Infra.Cli.Accounts where
 
 /-- The dispatch lives in `infra`; this repo declares.
 
+    `TYPEDNOTES_DEPLOYMENT` chooses Lite (default) or the existing full fleet.
+    Each has its own ownership boundary, including non-overlapping database
+    prefixes. `TYPEDNOTES_LITE_IMAGE` pins a built image across CI's three calls.
+
     `typednotes` is the whole declaration — its keys, its plan, its `in paris`
     placement and its `forget`s — as the single value the `fleet` command
     builds. As of infra 0.9.0 the front end takes that rather than three
@@ -38,6 +43,19 @@ def accounts : Infra.Cli.Accounts where
     resources it is about. Without it the Serverless SQL database would be
     `foreign` — never adopted and never destroyed — because it is the one
     kind in this fleet with nowhere to write an ownership marker. -/
-def main (args : List String) : IO UInt32 :=
-  Infra.Cli.run "typednotes-infra" typednotes
-    (accounts := accounts) (boundary := typednotesBoundary) (args := args)
+def main (args : List String) : IO UInt32 := do
+  match (← IO.getEnv "TYPEDNOTES_DEPLOYMENT").getD "lite" with
+  | "lite" =>
+    let image := (← IO.getEnv "TYPEDNOTES_LITE_IMAGE").getD liteImage
+    if image.isEmpty then
+      IO.eprintln "TYPEDNOTES_LITE_IMAGE must be a non-empty registry image reference"
+      return 2
+    Infra.Cli.run "typednotes-infra" (typednotesLiteWithImage image)
+      (headline := "Typednotes Lite — one container and one Serverless SQL database; compute DB sinks disabled")
+      (accounts := accounts) (boundary := typednotesLiteBoundary) (args := args)
+  | "full" =>
+    Infra.Cli.run "typednotes-infra" typednotes
+      (accounts := accounts) (boundary := typednotesBoundary) (args := args)
+  | _ =>
+    IO.eprintln "TYPEDNOTES_DEPLOYMENT must be lite (default) or full"
+    return 2
