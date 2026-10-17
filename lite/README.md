@@ -1,8 +1,10 @@
-# Building Typednotes Lite
+# Building Typednotes Lite and Local
 
 Lite packages the Typednotes app, Ledger, Liaison, Secrets, Lode and Lun into
 one application image, backed by one PostgreSQL database. This directory
-contains the build orchestration, image assembly, process supervisor and checks.
+contains the shared build graph, Lite image assembly, process supervisor and checks.
+The [Local image](../local/README.md) extends Lite with PostgreSQL in the same
+container and a persistent directory launcher.
 See [the deployment guide](../docs/lite.md) for CI, configuration, database
 limitations and recovery.
 
@@ -14,19 +16,18 @@ HCL is the configuration language used to describe its build targets.
 
 The file defines:
 
-- **Sources:** each service's Git repository and pinned release tag, selected
-  by variables such as `APP_REF` and `LUN_REF`.
+- **Sources:** each service's Git repository and the immutable commit of its
+  newest stable release tag, supplied by the release resolver.
 - **Service builds:** each repository builds through its own Dockerfile.
 - **Dependencies:** the six build results become named inputs to the `lite`
   target, which assembles the combined image using this directory's Dockerfile.
-- **Shared settings:** Linux amd64, GitHub Actions build caches, image labels
-  and the output image name (`LITE_IMAGE`).
+- **Shared settings:** the native amd64/arm64 platform, GitHub Actions build
+  caches, manifest/provenance labels and output image names.
 
-The default group selects `lite`, so building that target also builds the six
-service targets it depends on. BuildKit schedules the dependencies and reuses
-cached build steps. Intermediate service images do not need to be published.
-Service sources come from the configured remote Git tags, rather than sibling
-working directories on the build machine.
+The default group selects **both `lite` and `local`**. Local's `combined` context
+is `target:lite`, so it extends the exact same service bundle. BuildKit schedules
+the dependencies and reuses cached build steps; intermediate service images do
+not need publishing. Sources come from remote release commits, not sibling worktrees.
 
 ## How the Dockerfiles connect
 
@@ -50,47 +51,49 @@ target "lite" {
 COPY --from=app /usr/local/app /usr/local/app
 ```
 
-The same mechanism supplies the other service executables, the Lean toolchain
-and the warm package cache. Each service repository owns its compilation steps;
+The same mechanism supplies the other service executables, Lean toolchains
+and warm package caches. Each service repository owns its compilation steps;
 the Lite Dockerfile owns the final filesystem layout and runtime dependencies.
 
 ## Build locally
 
-Run these commands **from the repository root**, with Docker Buildx installed.
-Inspect the resolved build graph without building images:
+Run these commands **from the repository root**, with Python 3, Git and Docker
+Buildx installed. Resolve the newest service releases and inspect the build graph
+without building images:
 
 ```sh
-docker buildx bake -f lite/docker-bake.hcl --print
+scripts/build-images.sh --print
 ```
 
-Build all six services and load the final image into a running Docker daemon:
+Build all six services and load both final images into a running Docker daemon:
 
 ```sh
-docker buildx bake -f lite/docker-bake.hcl \
-  --set '*.cache-from=' \
-  --set '*.cache-to=' \
-  --set lite.output=type=docker
+scripts/build-images.sh
 ```
 
-The cache overrides disable GitHub Actions caches, which need the Actions
-runtime. The output image defaults to `ghcr.io/typednotes/typednotes-lite:latest`;
-set `LITE_IMAGE=typednotes-lite:local` before the command to use a local name.
-Building the image does not start the services or deploy cloud resources.
+The wrapper disables GitHub Actions caches outside CI. Override `LITE_IMAGE`,
+`LOCAL_IMAGE` or `PLATFORM` to choose output names or architecture. Building does
+not start the services or deploy cloud resources. Podman can run the published
+OCI images directly; Bake is only a dependency of source builds.
 
-When changing source releases, keep the app, ledger and vault refs aligned with
-their schema releases in [`Fleet.lean`](../Fleet.lean). CI checks this alignment
-before building.
+The resolver writes `.images/manifest.json`, packaged SQL and `.images/bake.json`.
+Include that generated Bake file when invoking Bake directly. It freezes all
+six newest stable release tags to their peeled commits and records the exact
+migrations belonging to them. There are no stale source-ref defaults. See
+[the shared build guide](../images/README.md) for schema alignment and rebuilds.
 
 ## Build, runtime and deployment responsibilities
 
 - **`docker-bake.hcl`** coordinates the source builds and their dependencies.
-- **`Dockerfile`** assembles the combined application image.
+- **`Dockerfile`** assembles Lite; `local/Dockerfile` adds PostgreSQL.
 - **[`runtime.py`](runtime.py)** starts and supervises the six service processes
   inside the running container.
 - **[`Fleet/Lite.lean`](../Fleet/Lite.lean)** declares the serverless container,
   database, migrations and supporting cloud resources.
-- **[`apply.yml`](../.github/workflows/apply.yml)** builds and smoke-tests the
-  image, publishes it, then deploys its exact digest when Lite is selected.
+- **[`images.yml`](../.github/workflows/images.yml)** checks service tags every
+  fifteen minutes, builds/tests both variants on amd64 and arm64, then publishes.
+- **[`apply.yml`](../.github/workflows/apply.yml)** reuses that publisher and
+  deploys the exact Lite digest with the SQL identified by its build manifest.
 
 Bake is a build-time tool; it does not run inside the deployed container.
 For more background, see [Docker's documentation on linking Bake targets](https://docs.docker.com/build/bake/contexts/).

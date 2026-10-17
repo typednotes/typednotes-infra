@@ -53,9 +53,10 @@ jobs:
           TYPEDNOTES_DEPLOYMENT=lite lake exe typednotes-infra check
           TYPEDNOTES_DEPLOYMENT=full lake exe typednotes-infra check
           python3 -m unittest discover -s lite/tests -v
+          python3 -m unittest discover -s images/tests -v
+          python3 -m unittest discover -s local/tests -v
           lake env lean --run scripts/lite-config.lean > "$RUNNER_TEMP/lite-config.json"
-          docker buildx bake -f lite/docker-bake.hcl --print > "$RUNNER_TEMP/lite-bake.json"
-          python3 lite/check-build.py "$RUNNER_TEMP/lite-config.json" "$RUNNER_TEMP/lite-bake.json"
+          jq -e --slurpfile actual "$RUNNER_TEMP/lite-config.json" '.vaultIdentities == $actual[0].vaultIdentities' images/vault-identities.json
 
       # Live plan: push to `main` only. Scaleway credentials only. The fleet
       # declares nothing on AWS; `accounts` names it, so without AWS

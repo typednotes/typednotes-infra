@@ -2,3 +2,11 @@
 !lite/
 !lite/Dockerfile
 !lite/runtime.py
+!images/
+!images/*.py
+!local/
+!local/*.py
+!.images/
+!.images/manifest.json
+!.images/migrations/
+!.images/migrations/**

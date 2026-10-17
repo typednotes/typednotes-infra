@@ -50,7 +50,21 @@ def main (args : List String) : IO UInt32 := do
     if image.isEmpty then
       IO.eprintln "TYPEDNOTES_LITE_IMAGE must be a non-empty registry image reference"
       return 2
-    Infra.Cli.run "typednotes-infra" (typednotesLiteWithImage image)
+    let mut selectedFleet := typednotesLiteWithImage image
+    -- Freeze latest once, and use THAT image's SQL, not independently resolved
+    -- service tags. Offline checks and teardown never need a registry read.
+    if ["plan", "apply"].contains (args.headD "") && !args.contains "--destroy" then
+      let metadata ← IO.Process.output { cmd := "python3", args := #["-m", "images.deployment", image] }
+      if metadata.exitCode != 0 then
+        IO.eprint metadata.stderr
+        return 1
+      match Lean.Json.parse metadata.stdout >>= Lean.fromJson? (α := LiteDeployment) with
+      | .error error => IO.eprintln error; return 1
+      | .ok deployment =>
+        match typednotesLiteDeployed deployment with
+        | .error error => IO.eprintln error; return 1
+        | .ok resolved => selectedFleet := resolved
+    Infra.Cli.run "typednotes-infra" selectedFleet
       (headline := "Typednotes Lite — one container and one Serverless SQL database; compute DB sinks disabled")
       (accounts := accounts) (boundary := typednotesLiteBoundary) (args := args)
   | "full" =>

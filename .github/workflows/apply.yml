@@ -24,16 +24,24 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  images:
+    if: inputs.confirm == 'typednotes' && inputs.deployment == 'lite'
+    uses: ./.github/workflows/images.yml
+    permissions:
+      contents: read
+      packages: write
   apply:
+    needs: images
     runs-on: ubuntu-latest
     timeout-minutes: 180
-    if: inputs.confirm == 'typednotes'
+    if: ${{ !cancelled() && inputs.confirm == 'typednotes' && (inputs.deployment == 'full' || needs.images.result == 'success') }}
     environment: production
     permissions:
       contents: read
       packages: write
     env:
       TYPEDNOTES_DEPLOYMENT: ${{ inputs.deployment }}
+      TYPEDNOTES_LITE_IMAGE: ${{ needs.images.outputs.lite }}
       SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
       SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
       SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
@@ -81,57 +89,6 @@ jobs:
           python3 -m unittest discover -s lite/tests -v
       - name: Check selected deployment's required secrets
         run: bash scripts/check-deployment-secrets.sh
-
-      # Bake builds all six services from pinned source tags, using their own
-      # Dockerfiles. Only the final assembled image is loaded and published.
-      - name: Set up Docker Buildx
-        if: inputs.deployment == 'lite'
-        uses: docker/setup-buildx-action@v4
-        with:
-          buildkitd-config-inline: |
-            [worker.oci]
-              max-parallelism = 2
-      - name: Export the authored Lite smoke configuration
-        if: inputs.deployment == 'lite'
-        run: |
-          lake env lean --run scripts/lite-config.lean > "$RUNNER_TEMP/lite-config.json"
-          docker buildx bake -f lite/docker-bake.hcl --print > "$RUNNER_TEMP/lite-bake.json"
-          python3 lite/check-build.py "$RUNNER_TEMP/lite-config.json" "$RUNNER_TEMP/lite-bake.json"
-          echo "LITE_IMAGE=ghcr.io/typednotes/typednotes-lite:ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
-      - name: Build all services and assemble Lite
-        if: inputs.deployment == 'lite'
-        uses: docker/bake-action@v7
-        with:
-          source: .
-          files: lite/docker-bake.hcl
-          targets: lite
-          set: lite.output=type=docker
-      - name: Smoke test the combined image against disposable PostgreSQL
-        if: inputs.deployment == 'lite'
-        run: python3 lite/check-image.py "$LITE_IMAGE" "$RUNNER_TEMP/lite-config.json"
-      - name: Log in to GHCR
-        if: inputs.deployment == 'lite'
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
-      - name: Publish the tested image and freeze its deployment digest
-        if: inputs.deployment == 'lite'
-        run: |
-          set -euo pipefail
-          docker push "$LITE_IMAGE"
-          image=$(docker image inspect "$LITE_IMAGE" | jq -er '.[0].RepoDigests[] | select(startswith("ghcr.io/typednotes/typednotes-lite@sha256:"))')
-          echo "TYPEDNOTES_LITE_IMAGE=$image" >> "$GITHUB_ENV"
-          docker tag "$LITE_IMAGE" ghcr.io/typednotes/typednotes-lite:latest
-          docker push ghcr.io/typednotes/typednotes-lite:latest
-          # Infra and Scaleway pull anonymously. New GHCR packages need a
-          # one-time public-visibility change; catch that before cloud creation.
-          token=$(curl -fsS 'https://ghcr.io/token?service=ghcr.io&scope=repository:typednotes/typednotes-lite:pull' | jq -er .token)
-          curl -fsSI -H "Authorization: Bearer $token" \
-            -H 'Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
-            "https://ghcr.io/v2/typednotes/typednotes-lite/manifests/${image##*@}" > /dev/null
-          echo "### Tested Lite image: $image" >> "$GITHUB_STEP_SUMMARY"
 
       # One environment and one immutable image reference for all three calls.
       # Pipefail prevents tee from hiding a failed plan.

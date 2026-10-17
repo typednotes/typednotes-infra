@@ -7,34 +7,22 @@ Usage: python3 lite/check-image.py IMAGE /path/to/exported-lite-config.json
 import json
 import os
 import secrets
-import subprocess
 import sys
-import time
 from pathlib import Path
 from urllib.error import URLError
 from urllib.request import urlopen
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-def docker(*args, data=None, timeout=60, check=True, env=None):
-    result = subprocess.run(["docker", *args], input=data, capture_output=True,
-                            text=True, timeout=timeout, env=env, check=False)
-    if check and result.returncode:
-        raise RuntimeError(f"docker {args[0]} failed: {result.stderr}")
-    return result.stdout.strip()
-
-
-def wait_for(check, description, timeout=180):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if check():
-            return
-        time.sleep(1)
-    raise RuntimeError(f"Timed out waiting for {description}")
+from images import migrations
+from images.releases import validate
+from images.smoke import VAULT_CHECK, WORKER_CHECK, docker, wait_for
 
 
 def main():
     image = sys.argv[1]
     config = json.loads(Path(sys.argv[2]).read_text())
+    validate(config)
     prefix = "typednotes-lite-smoke-" + secrets.token_hex(4)
     database, app = prefix + "-db", prefix + "-app"
     password = secrets.token_hex(24)
@@ -62,12 +50,10 @@ def main():
                  "disposable PostgreSQL")
 
         def sql(text):
-            return docker("exec", "-i", database, "psql", "-v", "ON_ERROR_STOP=1", "-U", "postgres",
+            return docker("exec", "-i", database, "psql", "-X", "-q", "-At", "-v", "ON_ERROR_STOP=1", "-U", "postgres",
                           data=text)
 
-        for url in config["migrations"]:
-            with urlopen(url, timeout=30) as response:
-                sql(response.read().decode())
+        migrations.apply(sql, config, Path(sys.argv[2]).parent)
         # Serving with DML-only credentials also checks that no child tries to
         # migrate itself; all four histories share this one logical database.
         sql(f"CREATE ROLE runtime LOGIN PASSWORD '{password}';\n"
@@ -100,46 +86,14 @@ def main():
         docker("exec", app, "python3", "/usr/local/lib/typednotes-lite/runtime.py", "--healthcheck")
         # Real Lean/toolchain commands run as each worker with its private elan
         # home; starts catch missing shared libraries in every service binary.
-        docker("exec", "-i", app, "python3", "-", data='''
-import importlib.util, pathlib, pwd, subprocess, sys, os
-spec = importlib.util.spec_from_file_location("runtime", "/usr/local/lib/typednotes-lite/runtime.py")
-module = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = module
-spec.loader.exec_module(module)
-for service in module.services(os.environ):
-    if service.name not in ("lode", "lun"):
-        continue
-    identity = pwd.getpwnam(service.name)
-    subprocess.run(["lake", "--version"], cwd=service.env["HOME"], env=service.env,
-                   user=identity.pw_uid, group=identity.pw_gid, check=True)
-    script = pathlib.Path(service.env["HOME"]) / "Smoke.lean"
-    script.write_text('def main : IO Unit := IO.println "lite-runtime-ok"\\n')
-    subprocess.run(["lean", "--run", str(script)], cwd=service.env["HOME"], env=service.env,
-                   user=identity.pw_uid, group=identity.pw_gid, check=True)
-''')
+        docker("exec", "-i", app, "python3", "-", data=WORKER_CHECK)
         # Persist a vault value, then restart the entire process bundle. The
         # master key and one PostgreSQL database must be sufficient to recover it.
-        vault_check = '''
-import json, os
-from urllib.request import Request, urlopen
-def request(path, body=None, token=None):
-    headers = {"Content-Type": "application/json"}
-    if token:
-        headers["Authorization"] = "Bearer " + token
-    with urlopen(Request("http://127.0.0.1:8200/v1/" + path,
-                         data=None if body is None else json.dumps(body).encode(), headers=headers)) as response:
-        return json.loads(response.read() or b"{}")
-token = request("auth/userpass/login", {"username": "admin", "password": os.environ["SECRETS_BOOTSTRAP_PASSWORD"]})["auth"]["client_token"]
-if os.environ.get("SMOKE_WRITE"):
-    request("secret/data/lite-smoke", {"data": {"value": "survives-restart"}}, token)
-else:
-    assert request("secret/data/lite-smoke", token=token)["data"]["data"]["value"] == "survives-restart"
-'''
-        docker("exec", "--env", "SMOKE_WRITE=1", "-i", app, "python3", "-", data=vault_check)
+        docker("exec", "--env", "SMOKE_WRITE=1", "-i", app, "python3", "-", data=VAULT_CHECK)
         docker("restart", "--time", "15", app)
         address = "http://" + docker("port", app, "8080/tcp")
         wait_for(ready, "restarted app and dependencies")
-        docker("exec", "-i", app, "python3", "-", data=vault_check)
+        docker("exec", "-i", app, "python3", "-", data=VAULT_CHECK)
         # A dead sweeper must not leave an apparently healthy application.
         docker("exec", "-i", app, "python3", "-", data='''
 import os, signal
