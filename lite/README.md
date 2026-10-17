@@ -25,9 +25,11 @@ The file defines:
   caches, manifest/provenance labels and output image names.
 
 The default group selects **both `lite` and `local`**. Local's `combined` context
-is `target:lite`, so it extends the exact same service bundle. BuildKit schedules
-the dependencies and reuses cached build steps; intermediate service images do
-not need publishing. Sources come from remote release commits, not sibling worktrees.
+is `target:lite`, so it extends the exact same service bundle. Direct local Bake
+builds schedule all dependencies without intermediate registry uploads. CI
+instead compiles each service on its own runner and passes thin OCI artifacts
+by digest to fresh assembly runners, keeping compiler working sets off those
+machines. Sources come from remote release commits, not sibling worktrees.
 
 ## How the Dockerfiles connect
 
@@ -91,7 +93,9 @@ migrations belonging to them. There are no stale source-ref defaults. See
 - **[`Fleet/Lite.lean`](../Fleet/Lite.lean)** declares the serverless container,
   database, migrations and supporting cloud resources.
 - **[`images.yml`](../.github/workflows/images.yml)** checks service tags every
-  fifteen minutes, builds/tests both variants on amd64 and arm64, then publishes.
+  fifteen minutes, compiles each service on its own native runner, then
+  assembles/tests both variants from digest-pinned artifacts on fresh amd64
+  and arm64 runners before publishing.
 - **[`apply.yml`](../.github/workflows/apply.yml)** reuses that publisher and
   deploys the exact Lite digest with the SQL identified by its build manifest.
 

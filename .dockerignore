@@ -4,6 +4,7 @@
 !lite/runtime.py
 !images/
 !images/*.py
+!images/artifact.Dockerfile
 !local/
 !local/*.py
 !.images/
