@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the real assembled image, one disposable PostgreSQL, and restart/
+"""Exercise the real assembled image, two logical databases, and restart/
 failure handling. No cloud credentials, live APIs or paid model calls are used.
 
 Usage: python3 lite/check-image.py IMAGE /path/to/exported-lite-config.json
@@ -25,9 +25,12 @@ def main():
     validate(config)
     prefix = "typednotes-lite-smoke-" + secrets.token_hex(4)
     database, app = prefix + "-db", prefix + "-app"
+    promoted = []
+    compute_expected = False
     password = secrets.token_hex(24)
     fixture = {
         "DATABASE_URL": f"postgres://runtime:{password}@database:5432/postgres",
+        "SECRETS_SERVER_STORAGE_DATABASE_URL": f"postgres://vault_runtime:{password}@database:5432/vault",
         "SECRETS_MASTER_KEY": secrets.token_hex(32),
         "SECRETS_BOOTSTRAP_PASSWORD": secrets.token_hex(32),
         "SECRETS_SERVER_SERVICE_IDENTITIES": config["vaultIdentities"],
@@ -49,18 +52,27 @@ def main():
         wait_for(lambda: "accepting connections" in docker("exec", database, "pg_isready", "-U", "postgres", check=False),
                  "disposable PostgreSQL")
 
-        def sql(text):
+        def sql(text, logical="postgres"):
             return docker("exec", "-i", database, "psql", "-X", "-q", "-At", "-v", "ON_ERROR_STOP=1", "-U", "postgres",
-                          data=text)
+                          "-d", logical, data=text)
 
-        migrations.apply(sql, config, Path(sys.argv[2]).parent)
+        sql("CREATE DATABASE vault;")
+        migrations.apply(sql, config, Path(sys.argv[2]).parent, schemas=("core", "ledger", "liaison"))
+        migrations.apply(lambda text: sql(text, "vault"), config, Path(sys.argv[2]).parent, schemas=("secrets",))
         # Serving with DML-only credentials also checks that no child tries to
-        # migrate itself; all four histories share this one logical database.
+        # migrate itself. Each database exposes only its own tables.
         sql(f"CREATE ROLE runtime LOGIN PASSWORD '{password}';\n"
             "REVOKE CREATE ON SCHEMA public FROM PUBLIC;\n"
             "GRANT USAGE ON SCHEMA public TO runtime;\n"
             "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO runtime;\n"
             "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO runtime;\n")
+        sql(f"CREATE ROLE vault_runtime LOGIN PASSWORD '{password}';\n"
+            "REVOKE CREATE ON SCHEMA public FROM PUBLIC;\n"
+            "GRANT USAGE ON SCHEMA public TO vault_runtime;\n"
+            "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO vault_runtime;\n"
+            "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO vault_runtime;\n", "vault")
+        if sql("SELECT to_regclass('public.kv_store') IS NULL;").strip() != "t":
+            raise RuntimeError("The app database must not contain the vault")
         args = ["run", "--detach", "--name", app, "--network", prefix,
                 "--publish", "127.0.0.1::8080"]
         for key in fixture:
@@ -78,7 +90,7 @@ def main():
                     health = json.load(response)
                     return (all(health.get(key) is True for key in
                                 ("database", "schema", "ledger", "vault", "liaison", "computations", "lode", "lun"))
-                            and health.get("compute") is False)
+                            and health.get("compute") is compute_expected)
             except (OSError, URLError):
                 return False
 
@@ -88,7 +100,7 @@ def main():
         # home; starts catch missing shared libraries in every service binary.
         docker("exec", "-i", app, "python3", "-", data=WORKER_CHECK)
         # Persist a vault value, then restart the entire process bundle. The
-        # master key and one PostgreSQL database must be sufficient to recover it.
+        # master key and the vault database must be sufficient to recover it.
         docker("exec", "--env", "SMOKE_WRITE=1", "-i", app, "python3", "-", data=VAULT_CHECK)
         docker("restart", "--time", "15", app)
         address = "http://" + docker("port", app, "8080/tcp")
@@ -111,12 +123,56 @@ else:
         code = int(docker("wait", app, timeout=30))
         if code == 0:
             raise RuntimeError("Lite must exit nonzero after a required service dies")
-        print("ok: six real services, shared DML-only PostgreSQL, worker toolchains, vault restart recovery and fail-fast supervision")
+        # Promote using the very same image, databases and encryption key. Only
+        # the process topology and the optional classic compute DB are changed.
+        sql(f"CREATE ROLE compute_runtime LOGIN CREATEROLE NOINHERIT PASSWORD '{password}';")
+        sql("CREATE DATABASE compute OWNER compute_runtime;")
+        standalone = {
+            "vault": {key: fixture[key] for key in ("SECRETS_SERVER_STORAGE_DATABASE_URL", "SECRETS_MASTER_KEY",
+                      "SECRETS_SERVER_SERVICE_IDENTITIES", "APP_SECRETS_PASSWORD", "LIAISON_SECRETS_PASSWORD", "LUN_SECRETS_PASSWORD")} |
+                     {"SECRETS_SERVER_BOOTSTRAP_PASSWORD": fixture["SECRETS_BOOTSTRAP_PASSWORD"]},
+            "ledger": {"DATABASE_URL": fixture["DATABASE_URL"]},
+            "liaison": {key: fixture[key] for key in ("DATABASE_URL", "LIAISON_ROOT_KEY")} |
+                       {"SECRETS_HOST": "vault", "SECRETS_USERNAME": "liaison", "SECRETS_INSECURE": "1",
+                        "SECRETS_PASSWORD": fixture["LIAISON_SECRETS_PASSWORD"]},
+            "lun": {key: fixture[key] for key in ("LUN_TOKEN", "LUN_ID_SALT", "LUN_WORKERS")} |
+                   {"LUN_LIAISON_URL": "http://liaison:8080", "SECRETS_HOST": "vault", "SECRETS_PORT": "8200",
+                    "SECRETS_USERNAME": "lun", "SECRETS_INSECURE": "1", "SECRETS_PASSWORD": fixture["LUN_SECRETS_PASSWORD"]},
+            "lode": {"LODE_TOKEN": fixture["LODE_TOKEN"], "LODE_LUN_TOKEN": fixture["LUN_TOKEN"],
+                     "LODE_LUN_URL": "http://lun:8080", "LODE_LIAISON_URL": "http://liaison:8080"},
+            "app": {key: fixture[key] for key in ("DATABASE_URL", "LIAISON_ROOT_KEY", "LODE_TOKEN", "LUN_TOKEN", "PUBLIC_URL")} |
+                   {"SECRETS_URL": "http://vault:8200", "SECRETS_USERNAME": "typednotes-app",
+                    "SECRETS_PASSWORD": fixture["APP_SECRETS_PASSWORD"], "LIAISON_URL": "http://liaison:8080",
+                    "LODE_URL": "http://lode:8080", "LUN_URL": "http://lun:8080",
+                    "COMPUTE_DB_URL": f"postgres://compute_runtime:{password}@database:5432/compute"},
+        }
+        docker("rm", app)
+        for service, source in standalone.items():
+            name = app if service == "app" else prefix + "-" + service
+            promoted.append(name)
+            source |= {"TYPEDNOTES_SERVICE": service, "PORT": "8200" if service == "vault" else "8080"}
+            args = ["run", "--detach", "--name", name, "--network", prefix, "--network-alias", service]
+            if service == "app":
+                args += ["--publish", "127.0.0.1::8080"]
+            for key in source:
+                args += ["--env", key]
+            docker(*args, image, env=os.environ | source)
+            wait_for(lambda name=name: json.loads(docker("inspect", name))[0]["State"].get("Health", {}).get("Status") == "healthy",
+                     "standalone " + service)
+        address = "http://" + docker("port", app, "8080/tcp")
+        compute_expected = True
+        wait_for(ready, "promoted app and compute database")
+        docker("exec", "-i", prefix + "-vault", "python3", "-", data=VAULT_CHECK)
+        for service in ("lode", "lun"):
+            docker("exec", "-i", prefix + "-" + service, "python3", "-", data=WORKER_CHECK)
+        print("ok: split DML-only databases, restart recovery, fail-fast supervision and six-service promotion with retained vault data and compute enabled")
     except Exception:
         print(docker("logs", app, check=False), file=sys.stderr)
+        for name in promoted:
+            print(docker("logs", name, check=False), file=sys.stderr)
         raise
     finally:
-        docker("rm", "--force", app, database, check=False)
+        docker("rm", "--force", app, database, *promoted, check=False)
         docker("network", "rm", prefix, check=False)
 
 

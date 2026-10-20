@@ -10,23 +10,26 @@ fleet. `infra` is the reusable engine, the provider backends, and the `plan`/`ap
 `check` never touches a network. `plan` pulls live state and prints what
 would change, but changes nothing. `apply` reconciles the selected fleet;
 `destroy` tears it down. Ownership markers scope both operations, including
-retiring resources removed from the declaration. Lite and full mode have
-independent markers and non-overlapping database prefixes.
+retiring resources removed from the declaration. Lite and `full-from-lite`
+share durable resource identities. The original `full` fleet remains independent.
 
 ## Lite deployment (default)
 
-**Release 0.9.0** adds the self-contained Local image and automatic, newest-service
-builds for both combined images. See [the release notes](docs/release-0.9.0.md).
+**Release 0.10.0** gives Lite separate application and vault databases and an
+in-place upgrade to the distributed topology. See [the release notes](docs/release-0.10.0.md).
 
 CI **Apply**, **Plan**, **Destroy** and the local CLI default to **`lite`**.
 Lite builds the app, Ledger, Liaison, Secrets, Lode and Lun from their newest
-stable release tags (frozen to commits per build), then deploys **one warm Serverless Container and one
-Serverless SQL database**. All four migration histories share that database.
+stable release tags (frozen to commits per build), then deploys **one warm Serverless Container and two
+Serverless SQL databases**. App, ledger and audit histories share the application
+database; the vault and its migration history use a separate database.
 The container has 4 vCPU / 8 GiB and exactly one instance; Lean toolchain
 installations are deduplicated and worker package caches stay service-specific.
 
-Select **`full`** in a workflow's `deployment` dropdown for the existing fleet
-described below. Locally:
+Select **`full-from-lite`** to expand an existing Lite deployment, retaining its
+databases, secrets and public endpoint. Supply its deployed Lite image digest;
+each separate service uses that exact bundle and matching migrations. Select
+**`full`** for the independent original fleet described below. Locally:
 
 ```sh
 lake exe typednotes-infra check                         # Lite, offline
@@ -39,10 +42,11 @@ credentials. **Built-in PostgreSQL notebook connectors / `db` sinks are disabled
 Serverless SQL cannot create their per-user roles. Generation, stateless graph
 execution and vault-backed storage remain available. Worker disks are ephemeral.
 
-Lite has its own ownership marker and database (`lite-typednotes-db`). Choosing
-Lite creates an independent deployment; it does not migrate or delete the full
-fleet's data. Only one deployment can own the `app.typednotes.com` domain binding
-at a time. [Lite build, deployment and recovery instructions](docs/lite.md).
+Lite owns `lite-typednotes-db` and `lite-typednotes-secrets-db` under marker
+`typednotes-lite`; `full-from-lite` reuses those resources and updates the same
+`typednotes-lite` public container in place. Neither touches the original full
+fleet's data. **Existing one-database Lite deployments need the one-time vault
+split before upgrading.** [Upgrade, deployment and recovery instructions](docs/lite.md).
 
 ## Local: everything in one image
 
@@ -67,6 +71,8 @@ changes. [Build, schema-alignment and trigger details](images/README.md).
 ## What's declared
 
 [`Fleet/Lite.lean`](Fleet/Lite.lean) declares Lite.
+[`Fleet/Promotion.lean`](Fleet/Promotion.lean) derives full-from-lite from the
+full topology while preserving Lite's durable identities and public container.
 [`Fleet.lean`](https://github.com/typednotes/typednotes-infra/blob/main/Fleet.lean) declares the full fleet: the `typednotes` system of
 [`typednotes/typednotes`](https://github.com/typednotes/typednotes/tree/main)'s [`docs/architecture.md`](https://github.com/typednotes/typednotes/blob/main/docs/architecture.md),
 as far as it is built — 55 Scaleway resources in one **full-mode** apply.
@@ -146,7 +152,7 @@ secrets-history
 - **An applied migration can't be changed underneath you**: infra compares the SQL at the URL with
   what the database recorded when it applied it, and refuses a mismatch (e.g. a moved tag).
 
-All seven service images use **`latest` selectors**, including Lode, Lun and
+In independent **full** mode, all seven service images use **`latest` selectors**, including Lode, Lun and
 the DB inspector. The admin gateway uses the official `nginx:alpine` image.
 Infra **0.23.0** resolves
 each image selector to a verified registry manifest digest before a live diff and
@@ -160,7 +166,10 @@ image becomes active on the next Apply; pushing a tag alone does not update a
 running Scaleway container. An offline guard checks every service image ends
 in `:latest` and the gateway uses its declared Alpine selector.
 
-Each service's **schema release value** (`ledgerRelease := "0.3.6"`, …) still
+Lite and `full-from-lite` instead run one verified bundle and its matching SQL,
+as described in [the combined image guide](images/README.md#schema-alignment-during-lite-deployment).
+
+Each full-mode service's **schema release value** (`ledgerRelease := "0.3.6"`, …) still
 names the git tag its SQL is read at. Image tags do not automatically adopt SQL:
 after publishing a release with migrations, update that release value and add
 the new migration files here before deploying code that needs them. This keeps
@@ -523,7 +532,7 @@ rather than as connections failing to store.
 
 ## CI
 
-Apply, Plan and Destroy expose a `deployment` choice, defaulting to `lite`.
+Apply, Plan and Destroy expose `lite`, `full-from-lite` and `full`, defaulting to `lite`.
 Lite Apply reuses the Combined images publisher and deploys its immutable digest
 with matching SQL. Full Apply uses the existing service images.
 See [the Lite CI sequence](docs/lite.md#ci-deployment).

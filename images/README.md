@@ -3,7 +3,7 @@
 The [Bake graph](../lite/docker-bake.hcl) builds six service repositories once
 per architecture and assembles two variants:
 
-- **Lite:** six application services, with external PostgreSQL provisioned by Infra.
+- **Lite:** six application services, with separate application/vault PostgreSQL databases provisioned by Infra.
 - **Local:** the exact Lite service bundle plus PostgreSQL 17 and persistent
   directory bootstrap. See [Local usage](../local/README.md).
 
@@ -32,6 +32,9 @@ checksums, and records each worker's actual Lean/Linen dependencies. Outputs:
 These generated files are ignored by Git and included selectively in the build
 context. The manifest is packaged in each image and recorded in its OCI config
 label `io.typednotes.build-manifest`.
+New builds declare `runtimeVersion: 2`: split-vault configuration and standalone
+service supervision. Cloud reconciliation refuses older bundles that would
+silently ignore the separate vault URL or launch all services after promotion.
 
 The policy snapshot `images/vault-identities.json` is generated from the owning
 Lean declaration (`scripts/lite-config.lean` exports it). CI checks exact
@@ -103,7 +106,9 @@ Fresh assembly runners import all six artifacts **by digest**. Their receipts
 must match the source commit, bundle ID, workflow run and architecture. The
 assembly graph is checked to contain only Lite and Local, so it cannot silently
 recompile all six services on the same VM. Each assembly runner builds both
-variants, tests Lite against disposable external PostgreSQL, and tests Local
+variants, tests Lite against two logical databases in disposable PostgreSQL,
+expands it into six separate service containers using the same image and stored
+vault data (with compute enabled), and tests Local
 through complete container recreation with its persisted database/key material.
 Only after both architectures pass are multi-platform manifests published as
 `ghcr.io/typednotes/typednotes-{lite,local}:latest` and `:build-BUILD_ID`.
@@ -141,7 +146,7 @@ persistent application data. Its dry-run path is exercised without deleting file
 Newest service tags can include new migrations. Lite plan/apply therefore cannot
 keep using the old statically listed schema versions independently of the image.
 
-For a live Lite plan/apply, `Main.lean` calls `python3 -m images.deployment` to
+For a live Lite or full-from-lite plan/apply, `Main.lean` calls `python3 -m images.deployment` to
 resolve the image selector, select the Linux amd64 manifest, verify registry
 content digests and read the built source manifest. The helper fetches SQL only
 from those immutable service commits and checks it against the packaged hashes.
@@ -154,7 +159,8 @@ same image across CI plan/apply/convergence. Registry metadata and immutable
 source hosting remain trusted execution boundaries, alongside the image itself.
 
 Offline `check` uses the declared baseline without networking. Teardown does not
-need registry metadata. Full mode retains its explicitly reviewed schema releases.
+need registry metadata. Full-from-lite requires an explicit Lite digest and runs
+that same bundle for all six services. Independent `full` mode retains its explicitly reviewed schema releases.
 Local startup instead consumes the SQL packaged inside its image without network
 access. Both paths compare applied history rather than replaying changed SQL.
 
@@ -165,6 +171,7 @@ python3 -m unittest discover -s images/tests -v
 python3 -m unittest discover -s local/tests -v
 python3 -m unittest discover -s lite/tests -v
 LOCAL_POSTGRES_BIN=/path/to/postgresql/bin python3 -m unittest discover -s local/tests -v
+LOCAL_POSTGRES_BIN=/path/to/postgresql/bin python3 -m unittest discover -s lite/tests -v
 ```
 
 Set `LOCAL_RELEASE_BUNDLE=.images` as well to apply the real resolved service SQL

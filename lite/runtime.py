@@ -14,6 +14,8 @@ from pathlib import Path
 from urllib.error import URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
+from images.database import environment as database_environment
+
 
 @dataclass
 class Service:
@@ -25,24 +27,39 @@ class Service:
     token: str | None = None
 
 
-def services(source, *, state_root=None, allow_compute=False):
+def services(source, *, state_root=None, allow_compute=False, standalone=None):
     """Allowlist inherited variables: workers must not inherit the parent's
     vault master key, warrant root, database URL or provider credentials.
     Every service also runs under a different Unix identity.
     """
     required = (
-        "DATABASE_URL", "SECRETS_MASTER_KEY", "SECRETS_BOOTSTRAP_PASSWORD",
+        "DATABASE_URL", "SECRETS_SERVER_STORAGE_DATABASE_URL", "SECRETS_MASTER_KEY", "SECRETS_BOOTSTRAP_PASSWORD",
         "SECRETS_SERVER_SERVICE_IDENTITIES", "LIAISON_ROOT_KEY",
         "APP_SECRETS_PASSWORD", "LIAISON_SECRETS_PASSWORD", "LUN_SECRETS_PASSWORD",
         "LODE_TOKEN", "LUN_TOKEN", "LUN_ID_SALT",
     )
+    if standalone is not None:
+        requirements = {
+            "vault": ("SECRETS_SERVER_STORAGE_DATABASE_URL", "SECRETS_MASTER_KEY",
+                      "SECRETS_SERVER_BOOTSTRAP_PASSWORD", "SECRETS_SERVER_SERVICE_IDENTITIES",
+                      "APP_SECRETS_PASSWORD", "LIAISON_SECRETS_PASSWORD", "LUN_SECRETS_PASSWORD"),
+            "ledger": ("DATABASE_URL",),
+            "liaison": ("DATABASE_URL", "LIAISON_ROOT_KEY", "SECRETS_HOST", "SECRETS_PASSWORD"),
+            "lun": ("LUN_TOKEN", "LUN_ID_SALT", "LUN_LIAISON_URL", "SECRETS_HOST", "SECRETS_PASSWORD"),
+            "lode": ("LODE_TOKEN", "LODE_LUN_TOKEN", "LODE_LUN_URL", "LODE_LIAISON_URL"),
+            "app": ("DATABASE_URL", "LIAISON_ROOT_KEY", "LODE_TOKEN", "LUN_TOKEN", "SECRETS_URL",
+                    "SECRETS_PASSWORD", "LIAISON_URL", "LODE_URL", "LUN_URL"),
+        }
+        if standalone not in requirements:
+            raise ValueError("Unknown standalone service")
+        required = requirements[standalone]
     missing = [key for key in required if not source.get(key)]
     if missing:
         raise ValueError("Missing configuration: " + ", ".join(missing))
-    if source.get("COMPUTE_DB_URL") and not allow_compute:
+    if source.get("COMPUTE_DB_URL") and not (allow_compute or standalone == "app"):
         raise ValueError("Lite uses Serverless SQL; COMPUTE_DB_URL must be unset")
     port = int(source.get("PORT", "8080"))
-    if not 1 <= port <= 65535 or port in (8081, 8082, 8083, 8084, 8200):
+    if not 1 <= port <= 65535 or (standalone is None and port in (8081, 8082, 8083, 8084, 8200)):
         raise ValueError("PORT must be valid and distinct from Lite's internal ports")
 
     def home(name):
@@ -62,10 +79,10 @@ def services(source, *, state_root=None, allow_compute=False):
                   "SECRETS_SERVER_SERVICE_IDENTITIES", "APP_SECRETS_PASSWORD",
                   "LIAISON_SECRETS_PASSWORD", "LUN_SECRETS_PASSWORD"),
         SECRETS_SERVER_LISTEN_ADDR="127.0.0.1:8200",
-        SECRETS_SERVER_STORAGE_DATABASE_URL=source["DATABASE_URL"],
+        SECRETS_SERVER_STORAGE_DATABASE_URL=source.get("SECRETS_SERVER_STORAGE_DATABASE_URL", ""),
         SECRETS_SERVER_STORAGE_MIGRATE="false",
         SECRETS_SERVER_BOOTSTRAP_USERNAME="admin",
-        SECRETS_SERVER_BOOTSTRAP_PASSWORD=source["SECRETS_BOOTSTRAP_PASSWORD"],
+        SECRETS_SERVER_BOOTSTRAP_PASSWORD=source.get("SECRETS_BOOTSTRAP_PASSWORD", ""),
     ), "http://127.0.0.1:8200/v1/sys/health")
     ledger = Service("ledger", ["/usr/local/bin/ledger"], environment(
         "ledger", ("DATABASE_URL", "LEDGER_SWEEP_INTERVAL_SECONDS"), PORT="8081",
@@ -74,7 +91,7 @@ def services(source, *, state_root=None, allow_compute=False):
         "liaison", ("DATABASE_URL", "LIAISON_ROOT_KEY"), oauth_prefixes,
         LIAISON_PORT="8082", SECRETS_HOST="127.0.0.1", SECRETS_PORT="8200",
         SECRETS_INSECURE="1", SECRETS_USERNAME="liaison",
-        SECRETS_PASSWORD=source["LIAISON_SECRETS_PASSWORD"],
+        SECRETS_PASSWORD=source.get("LIAISON_SECRETS_PASSWORD", ""),
     ), "http://127.0.0.1:8082/_health")
     lun = Service("lun", ["/usr/local/bin/lun"], environment(
         "lun", ("LUN_TOKEN", "LUN_ID_SALT", "LUN_WORKERS", "LUN_BUILD_TIMEOUT",
@@ -82,8 +99,8 @@ def services(source, *, state_root=None, allow_compute=False):
         LUN_PORT="8083", LUN_WORKDIR=home("lun") + "/work", LUN_PACKAGE_CACHE="/opt/lun/cache",
         LUN_LIAISON_URL="http://127.0.0.1:8082", ELAN_HOME=home("lun") + "/elan",
         SECRETS_HOST="127.0.0.1", SECRETS_PORT="8200", SECRETS_INSECURE="1",
-        SECRETS_USERNAME="lun", SECRETS_PASSWORD=source["LUN_SECRETS_PASSWORD"],
-    ), "http://127.0.0.1:8083/_health", token=source["LUN_TOKEN"])
+        SECRETS_USERNAME="lun", SECRETS_PASSWORD=source.get("LUN_SECRETS_PASSWORD", ""),
+    ), "http://127.0.0.1:8083/_health", token=source.get("LUN_TOKEN"))
     lode = Service("lode", ["/usr/local/bin/lode"], environment(
         "lode", ("LODE_TOKEN", "LODE_MAX_STEPS", "LODE_MODEL_TIMEOUT", "LODE_GIT_TIMEOUT",
                  "LODE_CHECK_TIMEOUT", "LODE_LUN_BUILD_TIMEOUT", "LODE_LUN_CALL_TIMEOUT"),
@@ -91,19 +108,36 @@ def services(source, *, state_root=None, allow_compute=False):
         LODE_LINEN_REV=source.get("LODE_LINEN_REF", "v1.12.0"), ELAN_HOME=home("lode") + "/elan",
         LODE_TOOLCHAIN=source.get("LODE_TOOLCHAIN", "leanprover/lean4:v4.34.0"),
         LODE_LIAISON_URL="http://127.0.0.1:8082", LODE_LUN_URL="http://127.0.0.1:8083",
-        LODE_LUN_TOKEN=source["LUN_TOKEN"],
-    ), "http://127.0.0.1:8084/_health", token=source["LODE_TOKEN"])
+        LODE_LUN_TOKEN=source.get("LUN_TOKEN", ""),
+    ), "http://127.0.0.1:8084/_health", token=source.get("LODE_TOKEN"))
     app = Service("app", ["/usr/local/app/server"], environment(
         "app", ("DATABASE_URL", "LIAISON_ROOT_KEY", "LODE_TOKEN", "LUN_TOKEN", "PUBLIC_URL"),
         oauth_prefixes + ("TYPEDNOTES_",),
         IP="0.0.0.0", PORT=str(port),
         SECRETS_URL="http://127.0.0.1:8200", SECRETS_USERNAME="typednotes-app",
-        SECRETS_PASSWORD=source["APP_SECRETS_PASSWORD"],
+        SECRETS_PASSWORD=source.get("APP_SECRETS_PASSWORD", ""),
         LIAISON_URL="http://127.0.0.1:8082", LODE_URL="http://127.0.0.1:8084",
         LUN_URL="http://127.0.0.1:8083",
     ), f"http://127.0.0.1:{port}/api/health")
-    if allow_compute and source.get("COMPUTE_DB_URL"):
+    if (allow_compute or standalone == "app") and source.get("COMPUTE_DB_URL"):
         app.env["COMPUTE_DB_URL"] = source["COMPUTE_DB_URL"]
+    if standalone is not None:
+        service = next(service for service in (vault, ledger, liaison, lun, lode, app) if service.name == standalone)
+        # Full's declaration supplies remote endpoints and service-specific
+        # credentials. Retain the same binary, toolchains and Unix identity as Lite.
+        for key in service.env:
+            if key in source and key not in ("HOME", "PATH", "LANG"):
+                service.env[key] = source[key]
+        if standalone == "vault":
+            service.env["SECRETS_SERVER_LISTEN_ADDR"] = f"0.0.0.0:{port}"
+            service.env["SECRETS_SERVER_BOOTSTRAP_PASSWORD"] = source["SECRETS_SERVER_BOOTSTRAP_PASSWORD"]
+        elif standalone == "ledger":
+            service.env["PORT"] = str(port)
+        elif standalone in ("liaison", "lun", "lode"):
+            service.env[standalone.upper() + "_PORT"] = str(port)
+        path = "/v1/sys/health" if standalone == "vault" else "/health" if standalone == "ledger" else "/api/health" if standalone == "app" else "/_health"
+        service.health = f"http://127.0.0.1:{port}{path}"
+        return [service]
     # Do not accept public traffic until every dependency is serving.
     return [vault, ledger, liaison, lun, lode, app]
 
@@ -116,6 +150,22 @@ def healthy(service):
             return reply.status == 200
     except (OSError, URLError):
         return False
+
+
+def check_storage(source):
+    """A legacy vault must be copied before any new vault can bootstrap.
+    Local uses its own bootstrap and deliberately retains one logical DB.
+    """
+    result = subprocess.run(
+        ["psql", "-X", "-w", "-At", "-v", "ON_ERROR_STOP=1", "-c",
+         "SELECT to_regclass('public.kv_store') IS NOT NULL;"],
+        env=database_environment(source["DATABASE_URL"]),
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        raise ValueError("Could not verify application/vault database separation")
+    if result.stdout.strip() != "f":
+        raise ValueError("Legacy vault still exists in the application database; follow docs/lite.md's vault-split procedure")
 
 
 def prepare_home(service):
@@ -208,7 +258,7 @@ class Supervisor:
                         return 0
                     if time.monotonic() >= deadline:
                         raise RuntimeError(f"{service.name} did not become healthy")
-            print("lite: all six services ready", flush=True)
+            print("lite: all services ready", flush=True)
             while not self.stopping.wait(0.5):
                 self.check_children()
             return 0
@@ -225,11 +275,15 @@ def main():
         if len(sys.argv) == 3 and sys.argv[1] == "--prepare-worker" and sys.argv[2] in ("lode", "lun"):
             prepare_worker(sys.argv[2])
             return 0
-        definitions = services(os.environ)
-        if sys.argv[1:] == ["--healthcheck"]:
+        arguments = sys.argv[1:]
+        standalone = os.environ.get("TYPEDNOTES_SERVICE")
+        definitions = services(os.environ, standalone=standalone)
+        if arguments == ["--healthcheck"]:
             return 0 if all(healthy(service) for service in definitions) else 1
-        if sys.argv[1:]:
+        if arguments:
             raise ValueError("Usage: runtime.py [--healthcheck]")
+        if standalone in (None, "app"):
+            check_storage(os.environ)
         supervisor = Supervisor(definitions, startup_timeout=int(os.environ.get("LITE_STARTUP_TIMEOUT", "180")))
         signal.signal(signal.SIGTERM, supervisor.stop)
         signal.signal(signal.SIGINT, supervisor.stop)

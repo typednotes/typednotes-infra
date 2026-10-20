@@ -36,7 +36,7 @@ on:
         required: true
         type: choice
         default: lite
-        options: [lite, full]
+        options: [lite, full-from-lite, full]
       confirm:
         description: 'Type "destroy typednotes" (or, with the box below ticked, "destroy typednotes and its data")'
         required: true

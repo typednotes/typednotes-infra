@@ -81,6 +81,7 @@ class ReleaseTests(unittest.TestCase):
                      for history in manifest["histories"] for migration in history["migrations"]}
             result = deployment("image", read=lambda _: ("immutable-image", manifest), fetch=files.__getitem__)
             self.assertEqual(result["image"], "immutable-image")
+            self.assertEqual(result["runtimeVersion"], 2)
             self.assertEqual([history["schema"] for history in result["histories"]], ["core", "ledger", "liaison", "secrets"])
             files[next(iter(files))] = b"altered SQL"
             with self.assertRaisesRegex(ValueError, "does not match"):

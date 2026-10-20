@@ -149,7 +149,7 @@ def resolve(output, revision, listing=None, download=archive, refs=None):
     refs = refs or resolve_refs(revision, listing)
     if refs["revision"] != revision or set(refs["sources"]) != set(SERVICES):
         raise ValueError("Release snapshot does not match this packaging revision")
-    manifest = {"version": 1, "bundleRevision": revision, "sources": {}, "histories": []}
+    manifest = {"version": 1, "runtimeVersion": 2, "bundleRevision": revision, "sources": {}, "histories": []}
     for name, (repository, schema, directory) in SERVICES.items():
         source = dict(refs["sources"][name])
         tag, commit = source["tag"], source["commit"]

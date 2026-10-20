@@ -9,9 +9,9 @@ required=(SCW_ACCESS_KEY SCW_SECRET_KEY SCW_DEFAULT_PROJECT_ID SCW_DEFAULT_ORGAN
   DROPBOX_CLIENT_ID DROPBOX_CLIENT_SECRET SLACK_CLIENT_ID SLACK_CLIENT_SECRET
   SLACK_SIGNING_SECRET WHATSAPP_APP_SECRET WHATSAPP_VERIFY_TOKEN)
 case "${TYPEDNOTES_DEPLOYMENT:-lite}" in
-  lite) ;;
-  full) required+=(COMPUTE_DB_PASSWORD DB_INSPECTOR_USERNAME DB_INSPECTOR_PASSWORD) ;;
-  *) echo 'TYPEDNOTES_DEPLOYMENT must be lite or full' >&2; exit 1 ;;
+  lite|lite-storage) ;;
+  full|full-from-lite) required+=(COMPUTE_DB_PASSWORD DB_INSPECTOR_USERNAME DB_INSPECTOR_PASSWORD) ;;
+  *) echo 'TYPEDNOTES_DEPLOYMENT must be lite, full-from-lite, full or lite-storage' >&2; exit 1 ;;
 esac
 missing=()
 for key in "${required[@]}"; do
@@ -21,7 +21,7 @@ if [ ${#missing[@]} -ne 0 ]; then
   echo "Missing repo secrets: ${missing[*]}" >&2
   exit 1
 fi
-if [ "${TYPEDNOTES_DEPLOYMENT:-lite}" = full ]; then
+if [[ "${TYPEDNOTES_DEPLOYMENT:-lite}" = full* ]]; then
   if [[ ${#COMPUTE_DB_PASSWORD} -lt 8 || ${#COMPUTE_DB_PASSWORD} -gt 128 ||
         ! "$COMPUTE_DB_PASSWORD" =~ [[:upper:]] || ! "$COMPUTE_DB_PASSWORD" =~ [[:lower:]] ||
         ! "$COMPUTE_DB_PASSWORD" =~ [[:digit:]] || ! "$COMPUTE_DB_PASSWORD" =~ [^[:alnum:]] ]]; then

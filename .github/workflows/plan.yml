@@ -12,7 +12,11 @@ on:
         required: true
         type: choice
         default: lite
-        options: [lite, full]
+        options: [lite, full-from-lite, full]
+      lite_image:
+        description: 'For full-from-lite: the currently deployed Lite image pinned with @sha256'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -25,6 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TYPEDNOTES_DEPLOYMENT: ${{ inputs.deployment || 'lite' }}
+      TYPEDNOTES_LITE_IMAGE: ${{ inputs.lite_image || 'ghcr.io/typednotes/typednotes-lite:latest' }}
     steps:
       - uses: actions/checkout@v7.0.1
       # Same native FFI dependency set as `infra`'s own CI, for the same reason:
@@ -32,7 +37,7 @@ jobs:
       # fleet touches. See `infra`'s `lean_action_ci.yml` for the fuller
       # explanation (`System.Keychain`/libsecret, libpq, OpenSSL headers).
       - name: Install native FFI dependencies
-        run: sudo apt-get update && sudo apt-get install -y libpq-dev libssl-dev libsecret-1-dev pkg-config ca-certificates
+        run: sudo apt-get update && sudo apt-get install -y libpq-dev postgresql libssl-dev libsecret-1-dev pkg-config ca-certificates
       - uses: leanprover/lean-action@v1.6.0
       # Lean's toolchain bundles a *static* OpenSSL whose compile-time
       # `OPENSSLDIR` points at whatever machine built it, so on a fresh runner
@@ -52,9 +57,11 @@ jobs:
         run: |
           TYPEDNOTES_DEPLOYMENT=lite lake exe typednotes-infra check
           TYPEDNOTES_DEPLOYMENT=full lake exe typednotes-infra check
-          python3 -m unittest discover -s lite/tests -v
+          TYPEDNOTES_DEPLOYMENT=full-from-lite lake exe typednotes-infra check
+          TYPEDNOTES_DEPLOYMENT=lite-storage lake exe typednotes-infra check
+          LOCAL_POSTGRES_BIN="$(pg_config --bindir)" python3 -m unittest discover -s lite/tests -v
           python3 -m unittest discover -s images/tests -v
-          python3 -m unittest discover -s local/tests -v
+          LOCAL_POSTGRES_BIN="$(pg_config --bindir)" python3 -m unittest discover -s local/tests -v
           lake env lean --run scripts/lite-config.lean > "$RUNNER_TEMP/lite-config.json"
           jq -e --slurpfile actual "$RUNNER_TEMP/lite-config.json" '.vaultIdentities == $actual[0].vaultIdentities' images/vault-identities.json
 
