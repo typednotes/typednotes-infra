@@ -62,6 +62,7 @@ def configure_database(pg, values):
 def environment(root, manifest, values):
     source = os.environ | values
     source.update(DATABASE_URL=f"postgres://typednotes_runtime:{values['POSTGRES_RUNTIME_PASSWORD']}@127.0.0.1:5432/typednotes",
+                  SECRETS_SERVER_STORAGE_DATABASE_URL=f"postgres://typednotes_runtime:{values['POSTGRES_RUNTIME_PASSWORD']}@127.0.0.1:5432/typednotes",
                   COMPUTE_DB_URL=f"postgres://typednotes_compute:{values['COMPUTE_DB_PASSWORD']}@127.0.0.1:5432/compute",
                   SECRETS_SERVER_SERVICE_IDENTITIES=manifest["vaultIdentities"],
                   PUBLIC_URL=os.environ.get("PUBLIC_URL", "http://localhost:8080"))

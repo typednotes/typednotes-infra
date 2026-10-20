@@ -10,7 +10,7 @@ def literal(text):
     return "'" + text.replace("'", "''") + "'"
 
 
-def apply(psql, manifest, root):
+def apply(psql, manifest, root, *, schemas=None):
     """`psql(sql)` returns tuples-only stdout and raises on SQL failure.
 
     Local startup holds an exclusive data-directory lock; the image smoke test
@@ -20,6 +20,8 @@ def apply(psql, manifest, root):
     pending = []
     for history in manifest["histories"]:
         schema = history["schema"]
+        if schemas is not None and schema not in schemas:
+            continue
         table = f'"{schema}".infra_migrations'
         psql(f'CREATE SCHEMA IF NOT EXISTS "{schema}"; CREATE TABLE IF NOT EXISTS {table} '
              '(id text PRIMARY KEY, sql text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now());')

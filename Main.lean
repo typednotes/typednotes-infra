@@ -1,4 +1,4 @@
-import Fleet.Lite
+import Fleet.Promotion
 
 open Infra.Core
 open Lite
@@ -28,9 +28,9 @@ def accounts : Infra.Cli.Accounts where
 
 /-- The dispatch lives in `infra`; this repo declares.
 
-    `TYPEDNOTES_DEPLOYMENT` chooses Lite (default) or the existing full fleet.
-    Each has its own ownership boundary, including non-overlapping database
-    prefixes. `TYPEDNOTES_LITE_IMAGE` pins a built image across CI's three calls.
+    `full-from-lite` expands Lite in place; `full` retains its independent
+    ownership boundary. `lite-storage` prepares a legacy vault split without
+    migrations or runtime changes. `TYPEDNOTES_LITE_IMAGE` pins the bundle.
 
     `typednotes` is the whole declaration — its keys, its plan, its `in paris`
     placement and its `forget`s — as the single value the `fleet` command
@@ -44,16 +44,20 @@ def accounts : Infra.Cli.Accounts where
     `foreign` — never adopted and never destroyed — because it is the one
     kind in this fleet with nowhere to write an ownership marker. -/
 def main (args : List String) : IO UInt32 := do
-  match (← IO.getEnv "TYPEDNOTES_DEPLOYMENT").getD "lite" with
-  | "lite" =>
+  let mode := (← IO.getEnv "TYPEDNOTES_DEPLOYMENT").getD "lite"
+  match mode with
+  | "lite" | "full-from-lite" =>
     let image := (← IO.getEnv "TYPEDNOTES_LITE_IMAGE").getD liteImage
     if image.isEmpty then
       IO.eprintln "TYPEDNOTES_LITE_IMAGE must be a non-empty registry image reference"
       return 2
-    let mut selectedFleet := typednotesLiteWithImage image
+    let mut selectedFleet := if mode == "lite" then typednotesLiteWithImage image else Promotion.fullFromLite image
     -- Freeze latest once, and use THAT image's SQL, not independently resolved
     -- service tags. Offline checks and teardown never need a registry read.
     if ["plan", "apply"].contains (args.headD "") && !args.contains "--destroy" then
+      if mode == "full-from-lite" && !(image.startsWith "ghcr.io/typednotes/typednotes-lite@sha256:") then
+        IO.eprintln "full-from-lite requires TYPEDNOTES_LITE_IMAGE pinned to the currently deployed Lite digest"
+        return 2
       let metadata ← IO.Process.output { cmd := "python3", args := #["-m", "images.deployment", image] }
       if metadata.exitCode != 0 then
         IO.eprint metadata.stderr
@@ -61,15 +65,21 @@ def main (args : List String) : IO UInt32 := do
       match Lean.Json.parse metadata.stdout >>= Lean.fromJson? (α := LiteDeployment) with
       | .error error => IO.eprintln error; return 1
       | .ok deployment =>
-        match typednotesLiteDeployed deployment with
+        match (if mode == "lite" then typednotesLiteDeployed deployment else Promotion.deployed deployment) with
         | .error error => IO.eprintln error; return 1
         | .ok resolved => selectedFleet := resolved
     Infra.Cli.run "typednotes-infra" selectedFleet
-      (headline := "Typednotes Lite — one container and one Serverless SQL database; compute DB sinks disabled")
+      (headline := if mode == "lite" then
+        "Typednotes Lite — one container and two Serverless SQL databases; compute DB sinks disabled"
+        else "Typednotes full-from-lite — full topology over the existing Lite storage and public endpoint")
+      (accounts := accounts) (boundary := typednotesLiteBoundary) (args := args)
+  | "lite-storage" =>
+    Infra.Cli.run "typednotes-infra" typednotesLiteStorage
+      (headline := "Typednotes Lite storage preparation — no migrations or runtime rollout")
       (accounts := accounts) (boundary := typednotesLiteBoundary) (args := args)
   | "full" =>
     Infra.Cli.run "typednotes-infra" typednotes
       (accounts := accounts) (boundary := typednotesBoundary) (args := args)
   | _ =>
-    IO.eprintln "TYPEDNOTES_DEPLOYMENT must be lite (default) or full"
+    IO.eprintln "TYPEDNOTES_DEPLOYMENT must be lite (default), full-from-lite, full or lite-storage"
     return 2

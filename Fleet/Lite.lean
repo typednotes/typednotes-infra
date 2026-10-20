@@ -8,9 +8,8 @@ def liteImage : String := "ghcr.io/typednotes/typednotes-lite:latest"
 
 namespace Lite
 
-/- One public runtime and one Serverless SQL database. The vault's `kv_store`
-    shares `public` with the application tables; bookkeeping still has four
-    distinct schemas. No classic compute database, private network or inspector.
+/- One public runtime and two Serverless SQL databases, matching full's storage
+    layout. No classic compute database, private network or inspector.
 
     Names deliberately do NOT start with the full fleet's `typednotes-` or
     `secrets-` database prefixes: either fleet can be destroyed independently. -/
@@ -82,6 +81,17 @@ fleet typednotesLite in paris where
       { valueFrom := composed (pgUrl observerKey db "lite-typednotes-db") }
     resource secrets "lite-typednotes-runtime-url" as dbUrl
       { valueFrom := composed (pgUrl runtimeKey db "lite-typednotes-db") }
+    resource postgres "lite-typednotes-secrets-db" as secretsDb
+      { masterUsername := "unused-serverless-sql-is-iam-only"
+      , masterPasswordSecret := ""
+      , minCapacity := 0
+      , maxCapacity := 4 }
+    resource secrets "lite-typednotes-secrets-migrator-url"
+      { valueFrom := composed (pgUrl migratorKey secretsDb "lite-typednotes-secrets-db") }
+    resource secrets "lite-typednotes-secrets-observer-url"
+      { valueFrom := composed (pgUrl observerKey secretsDb "lite-typednotes-secrets-db") }
+    resource secrets "lite-typednotes-secrets-runtime-url" as secretsDbUrl
+      { valueFrom := composed (pgUrl runtimeKey secretsDb "lite-typednotes-secrets-db") }
 
     resource postgresMigrations "lite-typednotes-core-history" as coreHistory
       { database := "lite-typednotes-db"
@@ -99,9 +109,9 @@ fleet typednotesLite in paris where
       , observerSecret := "lite-typednotes-observer-url"
       , schema := "liaison", migrations := liaisonMigrations }
     resource postgresMigrations "lite-typednotes-secrets-history" as secretsHistory
-      { database := "lite-typednotes-db"
-      , connectionSecret := "lite-typednotes-migrator-url"
-      , observerSecret := "lite-typednotes-observer-url"
+      { database := "lite-typednotes-secrets-db"
+      , connectionSecret := "lite-typednotes-secrets-migrator-url"
+      , observerSecret := "lite-typednotes-secrets-observer-url"
       , schema := "secrets", migrations := secretsMigrations }
 
     resource scalewayContainerNamespace "typednotes-lite" as ns
@@ -123,6 +133,7 @@ fleet typednotesLite in paris where
               , ("SECRETS_SERVER_SERVICE_IDENTITIES", vaultServiceIdentities)
               , ("LUN_WORKERS", "1")]
       , secretEnv := [("DATABASE_URL", dbUrl)
+                    , ("SECRETS_SERVER_STORAGE_DATABASE_URL", secretsDbUrl)
                     , ("SECRETS_MASTER_KEY", masterKey)
                     , ("SECRETS_BOOTSTRAP_PASSWORD", bootstrapPassword)
                     , ("LIAISON_ROOT_KEY", liaisonRootKey)
@@ -146,6 +157,19 @@ open Lite
 
 def typednotesLiteBoundary : Boundary :=
   { fleetName := some "typednotes-lite", namePrefix := some "lite-typednotes-" }
+
+/-- Prepare only the durable resources for the one-time legacy vault split.
+    Existing runtimes and histories stay declared but unmanaged; neither new
+    migrations nor a container rollout can precede the data copy. -/
+def typednotesLiteStorage : Fleet where
+  name := typednotesLite.name
+  keys := typednotesLite.keys
+  plan.assign
+    | .scaleway, .scalewayContainer, _ => .unmanaged
+    | .scaleway, .postgresMigrations, _ => .unmanaged
+    | p, k, key => typednotesLite.plan.assign p k key
+  regions := typednotesLite.regions
+  forgets := typednotesLite.forgets
 
 /-- Only the sole container's image is overridden; migrations and ownership
     are identical for the CI plan, apply and convergence check. -/
@@ -178,6 +202,7 @@ structure LiteSqlHistory where
 
 structure LiteDeployment where
   image : String
+  runtimeVersion : Nat := 1
   vaultIdentities : String
   histories : List LiteSqlHistory
   deriving Lean.FromJson
@@ -202,6 +227,8 @@ private def deployedPlan (deployment : LiteDeployment) : Plan typednotesLite.key
     | p, k, key => typednotesLite.plan.assign p k key
 
 def typednotesLiteDeployed (deployment : LiteDeployment) : Except String Fleet := do
+  unless deployment.runtimeVersion == 2 do
+    throw "This deployment needs a runtimeVersion 2 bundle (split vault and standalone services); rebuild/publish the combined images"
   unless deployment.histories.map (·.schema) == ["core", "ledger", "liaison", "secrets"] do
     throw "Lite image must supply exactly the four migration histories"
   let plan := deployedPlan deployment
@@ -210,17 +237,26 @@ def typednotesLiteDeployed (deployment : LiteDeployment) : Except String Fleet :
          , regions := typednotesLite.regions, forgets := typednotesLite.forgets }
 
 #guard typednotesLite.keys.count .scaleway .scalewayContainer = 1
-#guard typednotesLite.keys.count .scaleway .postgres = 1
+#guard typednotesLite.keys.count .scaleway .postgres = 2
 #guard typednotesLite.keys.count .scaleway .postgresMigrations = 4
 #guard typednotesLite.keys.count .scaleway .iam = 3
 #guard typednotesLite.plan.secretsAreSound
 #guard typednotesLite.plan.migrationsAreSound
 #guard typednotesLite.plan.accessIsSound
+#guard (Finite.elems (α := typednotesLite.keys.Key .scaleway .scalewayContainer)).all fun key =>
+  match typednotesLiteStorage.plan.assign .scaleway .scalewayContainer key with
+  | .unmanaged => true
+  | _ => false
+#guard (Finite.elems (α := typednotesLite.keys.Key .scaleway .postgresMigrations)).all fun key =>
+  match typednotesLiteStorage.plan.assign .scaleway .postgresMigrations key with
+  | .unmanaged => true
+  | _ => false
 #guard typednotesLite.keys.providers = [.scaleway]
 #guard (typednotesLite.regions.region .scaleway).map Region.code = some "fr-par"
 
 -- Neither mode may adopt or destroy the other mode's database by prefix.
 #guard !typednotesBoundary.prefixes.any ("lite-typednotes-db".startsWith ·)
+#guard !typednotesBoundary.prefixes.any ("lite-typednotes-secrets-db".startsWith ·)
 #guard !typednotesLiteBoundary.prefixes.any ("typednotes-db".startsWith ·)
 #guard !typednotesLiteBoundary.prefixes.any ("secrets-db".startsWith ·)
 #guard typednotesBoundary.fleetName != typednotesLiteBoundary.fleetName
@@ -239,11 +275,14 @@ private def liteContainer :
   (spec.migrations.asKnown.bind Expr.asLit).any (fun histories =>
     (Finite.elems (α := typednotesLite.keys.Key .scaleway .postgresMigrations)).all histories.contains) &&
   (spec.secretEnv.asKnown.bind Expr.asLit).any fun env =>
-    (env.map (·.1)).contains "DATABASE_URL" && !(env.map (·.1)).contains "COMPUTE_DB_URL"
+    (env.map (·.1)).contains "DATABASE_URL" &&
+    (env.map (·.1)).contains "SECRETS_SERVER_STORAGE_DATABASE_URL" &&
+    !(env.map (·.1)).contains "COMPUTE_DB_URL"
 
 #guard (Finite.elems (α := typednotesLite.keys.Key .scaleway .postgresMigrations)).all fun key =>
   match typednotesLite.plan.assign .scaleway .postgresMigrations key with
-  | .present spec => spec.database.asLit == some "lite-typednotes-db"
+  | .present spec => spec.database.asLit == some
+      (if spec.schema.asLit == some "secrets" then "lite-typednotes-secrets-db" else "lite-typednotes-db")
   | _ => false
 
 -- The immutable CI image override must actually reach the container plan.

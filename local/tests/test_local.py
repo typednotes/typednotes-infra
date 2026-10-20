@@ -45,7 +45,8 @@ class CredentialTests(unittest.TestCase):
 
     def test_local_scopes_compute_credentials_to_app_and_persists_worker_homes(self):
         with tempfile.TemporaryDirectory() as directory:
-            source = credentials(directory) | {"DATABASE_URL": "postgres://runtime@db/app", "COMPUTE_DB_URL": "postgres://admin@db/compute",
+            source = credentials(directory) | {"DATABASE_URL": "postgres://runtime@db/app", "SECRETS_SERVER_STORAGE_DATABASE_URL": "postgres://runtime@db/app",
+                                                 "COMPUTE_DB_URL": "postgres://admin@db/compute",
                                                 "SECRETS_SERVER_SERVICE_IDENTITIES": "fixture"}
             definitions = services(source, state_root=Path(directory) / "services", allow_compute=True)
             for service in definitions:

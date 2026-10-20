@@ -18,7 +18,7 @@ spec.loader.exec_module(runtime)
 
 
 def configuration():
-    keys = ("DATABASE_URL", "SECRETS_MASTER_KEY", "SECRETS_BOOTSTRAP_PASSWORD",
+    keys = ("DATABASE_URL", "SECRETS_SERVER_STORAGE_DATABASE_URL", "SECRETS_MASTER_KEY", "SECRETS_BOOTSTRAP_PASSWORD",
             "SECRETS_SERVER_SERVICE_IDENTITIES", "LIAISON_ROOT_KEY", "APP_SECRETS_PASSWORD",
             "LIAISON_SECRETS_PASSWORD", "LUN_SECRETS_PASSWORD", "LODE_TOKEN", "LUN_TOKEN", "LUN_ID_SALT")
     return {key: "fixture-" + key for key in keys}
@@ -31,7 +31,7 @@ class EnvironmentTests(unittest.TestCase):
         definitions = {service.name: service for service in runtime.services(source)}
         for name in ("lode", "lun"):
             env = definitions[name].env
-            for key in ("DATABASE_URL", "SECRETS_MASTER_KEY", "LIAISON_ROOT_KEY", "SCW_SECRET_KEY",
+            for key in ("DATABASE_URL", "SECRETS_SERVER_STORAGE_DATABASE_URL", "SECRETS_MASTER_KEY", "LIAISON_ROOT_KEY", "SCW_SECRET_KEY",
                         "GITHUB_CLIENT_SECRET", "COMPUTE_DB_PASSWORD", "LODE_MODEL_API_KEY",
                         "APP_SECRETS_PASSWORD", "LIAISON_SECRETS_PASSWORD"):
                 self.assertNotIn(key, env, (name, key))
@@ -41,6 +41,56 @@ class EnvironmentTests(unittest.TestCase):
         self.assertEqual(definitions["app"].env["SECRETS_PASSWORD"], source["APP_SECRETS_PASSWORD"])
         self.assertEqual(definitions["liaison"].env["SECRETS_PASSWORD"], source["LIAISON_SECRETS_PASSWORD"])
         self.assertEqual(definitions["ledger"].env["PORT"], "8081")
+
+    def test_vault_uses_only_its_separate_database(self):
+        source = configuration()
+        definitions = {service.name: service for service in runtime.services(source)}
+        self.assertEqual(definitions["vault"].env["SECRETS_SERVER_STORAGE_DATABASE_URL"],
+                         source["SECRETS_SERVER_STORAGE_DATABASE_URL"])
+        self.assertNotIn("DATABASE_URL", definitions["vault"].env)
+        for name in ("app", "ledger", "liaison"):
+            self.assertEqual(definitions[name].env["DATABASE_URL"], source["DATABASE_URL"])
+            self.assertNotIn("SECRETS_SERVER_STORAGE_DATABASE_URL", definitions[name].env)
+        del source["SECRETS_SERVER_STORAGE_DATABASE_URL"]
+        with self.assertRaisesRegex(ValueError, "SECRETS_SERVER_STORAGE_DATABASE_URL"):
+            runtime.services(source)
+
+    def test_legacy_vault_blocks_startup_instead_of_bootstrapping_an_empty_vault(self):
+        source = configuration() | {"DATABASE_URL": "postgres://runtime:password@database/app?sslmode=require"}
+        for output, code in (("t\n", 0), ("", 1)):
+            with patch.object(runtime.subprocess, "run", return_value=subprocess.CompletedProcess([], code, output, "secret")):
+                with self.assertRaises(ValueError) as raised:
+                    runtime.check_storage(source)
+                self.assertNotIn("secret", str(raised.exception))
+        with patch.object(runtime.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "f\n", "")):
+            runtime.check_storage(source)
+
+    def test_standalone_services_use_remote_endpoints_and_only_their_own_credentials(self):
+        fixtures = {
+            "vault": {"SECRETS_SERVER_STORAGE_DATABASE_URL": "vault-db", "SECRETS_MASTER_KEY": "master",
+                      "SECRETS_SERVER_BOOTSTRAP_PASSWORD": "bootstrap", "SECRETS_SERVER_SERVICE_IDENTITIES": "policies",
+                      "APP_SECRETS_PASSWORD": "app", "LIAISON_SECRETS_PASSWORD": "liaison", "LUN_SECRETS_PASSWORD": "lun"},
+            "ledger": {"DATABASE_URL": "app-db"},
+            "liaison": {"DATABASE_URL": "app-db", "LIAISON_ROOT_KEY": "root", "SECRETS_HOST": "vault.internal",
+                        "SECRETS_PASSWORD": "liaison"},
+            "lun": {"LUN_TOKEN": "lun", "LUN_ID_SALT": "salt", "LUN_LIAISON_URL": "http://liaison.internal",
+                    "SECRETS_HOST": "vault.internal", "SECRETS_PASSWORD": "lun"},
+            "lode": {"LODE_TOKEN": "lode", "LODE_LUN_TOKEN": "lun", "LODE_LUN_URL": "http://lun.internal",
+                     "LODE_LIAISON_URL": "http://liaison.internal"},
+            "app": {"DATABASE_URL": "app-db", "LIAISON_ROOT_KEY": "root", "LODE_TOKEN": "lode", "LUN_TOKEN": "lun",
+                    "SECRETS_URL": "http://vault.internal", "SECRETS_PASSWORD": "app", "LIAISON_URL": "http://liaison.internal",
+                    "LODE_URL": "http://lode.internal", "LUN_URL": "http://lun.internal", "COMPUTE_DB_URL": "compute-db"},
+        }
+        for name, source in fixtures.items():
+            with self.subTest(service=name):
+                definitions = runtime.services(source | {"PORT": "9000", "SCW_SECRET_KEY": "cloud"}, standalone=name)
+                self.assertEqual(len(definitions), 1)
+                service = definitions[0]
+                self.assertEqual(service.name, name)
+                self.assertTrue(service.health.startswith("http://127.0.0.1:9000/"))
+                self.assertNotIn("SCW_SECRET_KEY", service.env)
+                for key, value in source.items():
+                    self.assertEqual(service.env[key], value, key)
 
     def test_app_is_last_and_internal_ports_cannot_collide(self):
         source = configuration() | {"PORT": "9000"}
@@ -129,13 +179,14 @@ class DeploymentSecretTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_full_still_requires_its_database_and_inspector_secrets(self):
-        result = self.run_check("full")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("COMPUTE_DB_PASSWORD", result.stderr)
-        self.assertIn("DB_INSPECTOR_PASSWORD", result.stderr)
-        result = self.run_check("full", COMPUTE_DB_PASSWORD="Valid-Password1", DB_INSPECTOR_USERNAME="operator",
-                                DB_INSPECTOR_PASSWORD="fixture")
-        self.assertEqual(result.returncode, 0, result.stderr)
+        for mode in ("full", "full-from-lite"):
+            result = self.run_check(mode)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("COMPUTE_DB_PASSWORD", result.stderr)
+            self.assertIn("DB_INSPECTOR_PASSWORD", result.stderr)
+            result = self.run_check(mode, COMPUTE_DB_PASSWORD="Valid-Password1", DB_INSPECTOR_USERNAME="operator",
+                                    DB_INSPECTOR_PASSWORD="fixture")
+            self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_full_rejects_invalid_compute_password_and_lite_rejects_short_tokens(self):
         result = self.run_check("full", COMPUTE_DB_PASSWORD="invalid", DB_INSPECTOR_USERNAME="operator",

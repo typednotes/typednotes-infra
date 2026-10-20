@@ -1,7 +1,7 @@
 # Building Typednotes Lite and Local
 
 Lite packages the Typednotes app, Ledger, Liaison, Secrets, Lode and Lun into
-one application image, backed by one PostgreSQL database. This directory
+one application image, backed by separate application and vault PostgreSQL databases. This directory
 contains the shared build graph, Lite image assembly, process supervisor and checks.
 The [Local image](../local/README.md) extends Lite with PostgreSQL in the same
 container and a persistent directory launcher.
@@ -88,10 +88,14 @@ migrations belonging to them. There are no stale source-ref defaults. See
 
 - **`docker-bake.hcl`** coordinates the source builds and their dependencies.
 - **`Dockerfile`** assembles Lite; `local/Dockerfile` adds PostgreSQL.
-- **[`runtime.py`](runtime.py)** starts and supervises the six service processes
-  inside the running container.
+- **[`runtime.py`](runtime.py)** supervises the six processes in Lite, or one
+  selected service (`TYPEDNOTES_SERVICE`) per container after promotion.
 - **[`Fleet/Lite.lean`](../Fleet/Lite.lean)** declares the serverless container,
-  database, migrations and supporting cloud resources.
+  databases, migrations and supporting cloud resources.
+- **[`Fleet/Promotion.lean`](../Fleet/Promotion.lean)** expands Lite's runtime
+  topology while reusing storage, credentials and the public container identity.
+- **[`storage.py`](storage.py)** copies and verifies a legacy single-DB vault
+  before archiving the original table and migration history.
 - **[`images.yml`](../.github/workflows/images.yml)** checks service tags every
   fifteen minutes, compiles each service on its own native runner, then
   assembles/tests both variants from digest-pinned artifacts on fresh amd64

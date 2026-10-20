@@ -100,10 +100,12 @@ jobs:
       - name: Install native FFI dependencies
         run: sudo apt-get update && sudo apt-get install -y libpq-dev libssl-dev libsecret-1-dev pkg-config ca-certificates
       - uses: leanprover/lean-action@v1.6.0
-      - name: Verify both fleets, policy correspondence and bootstrap tests
+      - name: Verify all layouts, policy correspondence and bootstrap tests
         run: |
           TYPEDNOTES_DEPLOYMENT=lite lake exe typednotes-infra check
           TYPEDNOTES_DEPLOYMENT=full lake exe typednotes-infra check
+          TYPEDNOTES_DEPLOYMENT=full-from-lite lake exe typednotes-infra check
+          TYPEDNOTES_DEPLOYMENT=lite-storage lake exe typednotes-infra check
           python3 -m unittest discover -s lite/tests -v
           python3 -m unittest discover -s images/tests -v
           python3 -m unittest discover -s local/tests -v
@@ -259,7 +261,7 @@ jobs:
           set: |
             lite.output=type=docker
             local.output=type=docker
-      - name: Smoke test Lite with external PostgreSQL
+      - name: Smoke test split Lite storage and full promotion
         run: python3 lite/check-image.py "$LITE_IMAGE" .images/manifest.json
       - name: Smoke test self-contained Local and container recreation
         run: python3 local/check-image.py "$LOCAL_IMAGE"

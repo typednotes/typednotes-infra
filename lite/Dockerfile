@@ -14,7 +14,7 @@ ADD https://raw.githubusercontent.com/typednotes/linen/${LUN_LINEN_REF}/ci/nativ
 # Versions and intentional word splitting come from Linen's canonical apt list.
 # hadolint ignore=DL3008,SC2046
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      python3 tini bash tar gzip $(sed 's/#.*//' /tmp/lode-apt.txt /tmp/lun-apt.txt | sort -u) \
+      python3 tini bash tar gzip postgresql-client $(sed 's/#.*//' /tmp/lode-apt.txt /tmp/lun-apt.txt | sort -u) \
     && rm -rf /var/lib/apt/lists/* \
     && uid=10001 \
     && for service in app ledger liaison vault lode lun; do \

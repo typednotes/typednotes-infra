@@ -1,6 +1,6 @@
 name: Apply
 
-# Only a manual dispatch can mutate cloud resources. Both modes use the same
+# Only a manual dispatch can mutate cloud resources. All modes use the same
 # concurrency group as Destroy, and keep the exact pre-apply plan in the log.
 on:
   workflow_dispatch:
@@ -10,7 +10,11 @@ on:
         required: true
         type: choice
         default: lite
-        options: [lite, full]
+        options: [lite, full-from-lite, full]
+      lite_image:
+        description: 'For full-from-lite: the currently deployed runtimeVersion 2 Lite image, pinned with @sha256'
+        required: false
+        type: string
       confirm:
         description: 'Type "typednotes" to confirm a live apply of the selected deployment'
         required: true
@@ -34,14 +38,14 @@ jobs:
     needs: images
     runs-on: ubuntu-latest
     timeout-minutes: 180
-    if: ${{ !cancelled() && inputs.confirm == 'typednotes' && (inputs.deployment == 'full' || needs.images.result == 'success') }}
+    if: ${{ !cancelled() && inputs.confirm == 'typednotes' && (inputs.deployment != 'lite' || needs.images.result == 'success') }}
     environment: production
     permissions:
       contents: read
       packages: write
     env:
       TYPEDNOTES_DEPLOYMENT: ${{ inputs.deployment }}
-      TYPEDNOTES_LITE_IMAGE: ${{ needs.images.outputs.lite }}
+      TYPEDNOTES_LITE_IMAGE: ${{ inputs.deployment == 'lite' && needs.images.outputs.lite || inputs.lite_image || 'ghcr.io/typednotes/typednotes-lite:latest' }}
       SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
       SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
       SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}
@@ -82,10 +86,12 @@ jobs:
         run: |
           echo "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt" >> "$GITHUB_ENV"
           echo "SSL_CERT_DIR=/etc/ssl/certs" >> "$GITHUB_ENV"
-      - name: Run both fleets' offline checks and Lite supervisor tests
+      - name: Run all deployment checks and Lite supervisor tests
         run: |
           TYPEDNOTES_DEPLOYMENT=lite lake exe typednotes-infra check
           TYPEDNOTES_DEPLOYMENT=full lake exe typednotes-infra check
+          TYPEDNOTES_DEPLOYMENT=full-from-lite lake exe typednotes-infra check
+          TYPEDNOTES_DEPLOYMENT=lite-storage lake exe typednotes-infra check
           python3 -m unittest discover -s lite/tests -v
       - name: Check selected deployment's required secrets
         run: bash scripts/check-deployment-secrets.sh

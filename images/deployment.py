@@ -72,7 +72,8 @@ def deployment(image, read=read_manifest, fetch=None):
                 raise ValueError(f"SQL does not match the built image: {history['schema']}/{migration['id']}")
             migrations.append({"id": migration["id"], "sql": data.decode("utf-8")})
         histories.append({"schema": history["schema"], "migrations": migrations})
-    return {"image": image, "vaultIdentities": manifest["vaultIdentities"], "histories": histories}
+    return {"image": image, "runtimeVersion": manifest.get("runtimeVersion", 1),
+            "vaultIdentities": manifest["vaultIdentities"], "histories": histories}
 
 
 if __name__ == "__main__":

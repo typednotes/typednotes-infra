@@ -29,7 +29,7 @@ if "TYPEDNOTES_DATA_DIR" in os.environ:
     manifest = json.loads(pathlib.Path("/usr/local/share/typednotes/manifest.json").read_text())
     definitions = environment(root, manifest, json.loads((root / "secrets.json").read_text()))
 else:
-    definitions = services(os.environ)
+    definitions = services(os.environ, standalone=os.environ.get("TYPEDNOTES_SERVICE"))
 for service in definitions:
     if service.name not in ("lode", "lun"):
         continue
@@ -53,7 +53,7 @@ def request(path, body=None, token=None):
     with urlopen(Request("http://127.0.0.1:8200/v1/" + path,
                          data=None if body is None else json.dumps(body).encode(), headers=headers)) as response:
         return json.loads(response.read() or b"{}")
-password = os.environ.get("SECRETS_BOOTSTRAP_PASSWORD")
+password = os.environ.get("SECRETS_BOOTSTRAP_PASSWORD") or os.environ.get("SECRETS_SERVER_BOOTSTRAP_PASSWORD")
 if not password:
     password = json.loads((Path(os.environ["TYPEDNOTES_DATA_DIR"]) / "secrets.json").read_text())["SECRETS_BOOTSTRAP_PASSWORD"]
 token = request("auth/userpass/login", {"username": "admin", "password": password})["auth"]["client_token"]
