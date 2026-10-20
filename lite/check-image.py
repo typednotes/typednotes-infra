@@ -2,7 +2,7 @@
 """Exercise the real assembled image, two logical databases, and restart/
 failure handling. No cloud credentials, live APIs or paid model calls are used.
 
-Usage: python3 lite/check-image.py IMAGE /path/to/exported-lite-config.json
+Usage: python3 lite/check-image.py IMAGE MANIFEST [SERVICE_CONFIG]
 """
 import json
 import os
@@ -16,13 +16,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from images import migrations
 from images.releases import validate
-from images.smoke import VAULT_CHECK, WORKER_CHECK, docker, wait_for
+from images.smoke import (
+    VAULT_CHECK,
+    WORKER_CHECK,
+    docker,
+    service_environment,
+    wait_for,
+)
+from lite.runtime import DEFINITIONS
 
 
 def main():
     image = sys.argv[1]
     config = json.loads(Path(sys.argv[2]).read_text())
     validate(config)
+    service_config = json.loads(Path(sys.argv[3] if len(sys.argv) > 3 else ".images/service-config.json").read_text())
     prefix = "typednotes-lite-smoke-" + secrets.token_hex(4)
     database, app = prefix + "-db", prefix + "-app"
     promoted = []
@@ -127,31 +135,22 @@ else:
         # the process topology and the optional classic compute DB are changed.
         sql(f"CREATE ROLE compute_runtime LOGIN CREATEROLE NOINHERIT PASSWORD '{password}';")
         sql("CREATE DATABASE compute OWNER compute_runtime;")
-        standalone = {
-            "vault": {key: fixture[key] for key in ("SECRETS_SERVER_STORAGE_DATABASE_URL", "SECRETS_MASTER_KEY",
-                      "SECRETS_SERVER_SERVICE_IDENTITIES", "APP_SECRETS_PASSWORD", "LIAISON_SECRETS_PASSWORD", "LUN_SECRETS_PASSWORD")} |
-                     {"SECRETS_SERVER_BOOTSTRAP_PASSWORD": fixture["SECRETS_BOOTSTRAP_PASSWORD"]},
-            "ledger": {"DATABASE_URL": fixture["DATABASE_URL"]},
-            "liaison": {key: fixture[key] for key in ("DATABASE_URL", "LIAISON_ROOT_KEY")} |
-                       {"SECRETS_HOST": "vault", "SECRETS_USERNAME": "liaison", "SECRETS_INSECURE": "1",
-                        "SECRETS_PASSWORD": fixture["LIAISON_SECRETS_PASSWORD"]},
-            "lun": {key: fixture[key] for key in ("LUN_TOKEN", "LUN_ID_SALT", "LUN_WORKERS")} |
-                   {"LUN_LIAISON_URL": "http://liaison:8080", "SECRETS_HOST": "vault", "SECRETS_PORT": "8200",
-                    "SECRETS_USERNAME": "lun", "SECRETS_INSECURE": "1", "SECRETS_PASSWORD": fixture["LUN_SECRETS_PASSWORD"]},
-            "lode": {"LODE_TOKEN": fixture["LODE_TOKEN"], "LODE_LUN_TOKEN": fixture["LUN_TOKEN"],
-                     "LODE_LUN_URL": "http://lun:8080", "LODE_LIAISON_URL": "http://liaison:8080"},
-            "app": {key: fixture[key] for key in ("DATABASE_URL", "LIAISON_ROOT_KEY", "LODE_TOKEN", "LUN_TOKEN", "PUBLIC_URL")} |
-                   {"SECRETS_URL": "http://vault:8200", "SECRETS_USERNAME": "typednotes-app",
-                    "SECRETS_PASSWORD": fixture["APP_SECRETS_PASSWORD"], "LIAISON_URL": "http://liaison:8080",
-                    "LODE_URL": "http://lode:8080", "LUN_URL": "http://lun:8080",
-                    "COMPUTE_DB_URL": f"postgres://compute_runtime:{password}@database:5432/compute"},
-        }
+        fixture["COMPUTE_DB_URL"] = f"postgres://compute_runtime:{password}@database:5432/compute"
         docker("rm", app)
-        for service, source in standalone.items():
+        for service in DEFINITIONS:
+            declared = service_config[service]
+            # Optional provider OAuth credentials are intentionally absent in
+            # smoke tests. Missing required credentials still fail the service
+            # contract, rather than being replaced by empty placeholders.
+            source = service_environment(declared, fixture)
             name = app if service == "app" else prefix + "-" + service
             promoted.append(name)
-            source |= {"TYPEDNOTES_SERVICE": service, "PORT": "8200" if service == "vault" else "8080"}
-            args = ["run", "--detach", "--name", name, "--network", prefix, "--network-alias", service]
+            # Docker has no platform HTTP front door. Bind supporting services
+            # on 80 in this network namespace to exercise the REAL declared
+            # endpoint URLs, not hand-written internal-listener addresses.
+            source["PORT"] = "8080" if service == "app" else "80"
+            args = ["run", "--detach", "--name", name, "--network", prefix, "--network-alias", service,
+                    "--sysctl", "net.ipv4.ip_unprivileged_port_start=0"]
             if service == "app":
                 args += ["--publish", "127.0.0.1::8080"]
             for key in source:

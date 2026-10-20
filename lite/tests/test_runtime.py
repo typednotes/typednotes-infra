@@ -1,5 +1,7 @@
 import importlib.util
+import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -8,6 +10,8 @@ import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+from images.smoke import service_environment
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("lite_runtime", ROOT / "runtime.py")
@@ -66,22 +70,13 @@ class EnvironmentTests(unittest.TestCase):
             runtime.check_storage(source)
 
     def test_standalone_services_use_remote_endpoints_and_only_their_own_credentials(self):
-        fixtures = {
-            "vault": {"SECRETS_SERVER_STORAGE_DATABASE_URL": "vault-db", "SECRETS_MASTER_KEY": "master",
-                      "SECRETS_SERVER_BOOTSTRAP_PASSWORD": "bootstrap", "SECRETS_SERVER_SERVICE_IDENTITIES": "policies",
-                      "APP_SECRETS_PASSWORD": "app", "LIAISON_SECRETS_PASSWORD": "liaison", "LUN_SECRETS_PASSWORD": "lun"},
-            "ledger": {"DATABASE_URL": "app-db"},
-            "liaison": {"DATABASE_URL": "app-db", "LIAISON_ROOT_KEY": "root", "SECRETS_HOST": "vault.internal",
-                        "SECRETS_PASSWORD": "liaison"},
-            "lun": {"LUN_TOKEN": "lun", "LUN_ID_SALT": "salt", "LUN_LIAISON_URL": "http://liaison.internal",
-                    "SECRETS_HOST": "vault.internal", "SECRETS_PASSWORD": "lun"},
-            "lode": {"LODE_TOKEN": "lode", "LODE_LUN_TOKEN": "lun", "LODE_LUN_URL": "http://lun.internal",
-                     "LODE_LIAISON_URL": "http://liaison.internal"},
-            "app": {"DATABASE_URL": "app-db", "LIAISON_ROOT_KEY": "root", "LODE_TOKEN": "lode", "LUN_TOKEN": "lun",
-                    "SECRETS_URL": "http://vault.internal", "SECRETS_PASSWORD": "app", "LIAISON_URL": "http://liaison.internal",
-                    "LODE_URL": "http://lode.internal", "LUN_URL": "http://lun.internal", "COMPUTE_DB_URL": "compute-db"},
-        }
-        for name, source in fixtures.items():
+        if not shutil.which("lake"):
+            self.skipTest("Lean is required to evaluate the actual fleet configuration")
+        result = subprocess.run(["lake", "env", "lean", "--run", "scripts/service-config.lean"],
+                                cwd=ROOT.parent, text=True, capture_output=True, check=True)
+        for name, declared in json.loads(result.stdout).items():
+            values = {origin: "fixture-" + origin for origin in declared["secretInputs"].values()}
+            source = service_environment(declared, values)
             with self.subTest(service=name):
                 definitions = runtime.services(source | {"PORT": "9000", "SCW_SECRET_KEY": "cloud"}, standalone=name)
                 self.assertEqual(len(definitions), 1)
@@ -89,8 +84,48 @@ class EnvironmentTests(unittest.TestCase):
                 self.assertEqual(service.name, name)
                 self.assertTrue(service.health.startswith("http://127.0.0.1:9000/"))
                 self.assertNotIn("SCW_SECRET_KEY", service.env)
-                for key, value in source.items():
+                for key, value in declared["env"].items():
+                    if key.endswith("_PORT") or key == "TYPEDNOTES_SERVICE":
+                        continue
                     self.assertEqual(service.env[key], value, key)
+                for key, origin in declared["secretInputs"].items():
+                    self.assertEqual(service.env[key], "fixture-" + origin, key)
+                core_values = {key: value for key, value in values.items() if not key.startswith(runtime.OAUTH_PREFIXES)}
+                runtime.services(service_environment(declared, core_values) | {"PORT": str(declared["port"])}, standalone=name)
+                if name in ("liaison", "lun"):
+                    self.assertEqual(service.env["SECRETS_HOST"], "vault.example.internal")
+                    self.assertEqual(service.env["SECRETS_PORT"], "80")
+                    self.assertEqual(service.env["SECRETS_INSECURE"], "1")
+                    for missing in ("SECRETS_HOST", "SECRETS_PORT"):
+                        with self.assertRaisesRegex(ValueError, missing):
+                            runtime.services({k: v for k, v in source.items() if k != missing}, standalone=name)
+
+    def test_worker_preparation_imports_under_the_actual_scrubbed_environment(self):
+        service = next(service for service in runtime.services(configuration()) if service.name == "lun")
+        self.assertNotIn("PYTHONPATH", service.env)
+        with tempfile.TemporaryDirectory() as directory:
+            # The helper should reach its filesystem work without needing any
+            # application modules. Elan's absent settings file is intentional.
+            result = subprocess.run([sys.executable, str(ROOT / "runtime.py"), "--prepare-worker", "lun"],
+                                    cwd=directory, env=service.env | {"ELAN_HOME": directory},
+                                    text=True, capture_output=True, check=False)
+        self.assertNotIn("ModuleNotFoundError", result.stderr)
+        self.assertIn("lun-settings.toml", result.stderr)
+
+    def test_smoke_export_uses_the_selected_bundle_policies_and_front_door_ports(self):
+        if not shutil.which("lake"):
+            self.skipTest("Lean is required to export the smoke configuration")
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = Path(directory) / "manifest.json"
+            manifest.write_text(json.dumps({"vaultIdentities": "image-specific-vault-policies"}))
+            result = subprocess.run(["lake", "env", "lean", "--run", "scripts/service-config.lean", "docker", str(manifest)],
+                                    cwd=ROOT.parent, text=True, capture_output=True, check=True)
+        declared = json.loads(result.stdout)
+        self.assertEqual(set(declared), set(runtime.DEFINITIONS))
+        self.assertEqual(declared["vault"]["env"]["SECRETS_SERVER_SERVICE_IDENTITIES"], "image-specific-vault-policies")
+        for name in ("liaison", "lun"):
+            self.assertEqual(declared[name]["env"]["SECRETS_HOST"], "vault")
+            self.assertEqual(declared[name]["env"]["SECRETS_PORT"], "80")
 
     def test_app_is_last_and_internal_ports_cannot_collide(self):
         source = configuration() | {"PORT": "9000"}

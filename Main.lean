@@ -1,4 +1,4 @@
-import Fleet.Promotion
+import Fleet.Topology
 
 open Infra.Core
 open Lite
@@ -45,6 +45,15 @@ def accounts : Infra.Cli.Accounts where
     kind in this fleet with nowhere to write an ownership marker. -/
 def main (args : List String) : IO UInt32 := do
   let mode := (← IO.getEnv "TYPEDNOTES_DEPLOYMENT").getD "lite"
+  if ["lite", "lite-storage"].contains mode &&
+      ((Infra.Cli.parseReconcile args).isSome || args.head? == some "dump") then
+    try
+      let (backends, credentials) ← Infra.Cli.liveFor SharedDeployment.keys typednotes.regions "typednotes-lite"
+      Infra.Cli.checkAccounts SharedDeployment.keys accounts credentials false
+      DeploymentTopology.requireLite backends
+    catch error =>
+      IO.eprintln s!"error: {error}"
+      return 1
   match mode with
   | "lite" | "full-from-lite" =>
     let image := (← IO.getEnv "TYPEDNOTES_LITE_IMAGE").getD liteImage
@@ -56,13 +65,13 @@ def main (args : List String) : IO UInt32 := do
     -- service tags. Offline checks and teardown never need a registry read.
     if ["plan", "apply"].contains (args.headD "") && !args.contains "--destroy" then
       if mode == "full-from-lite" && !(image.startsWith "ghcr.io/typednotes/typednotes-lite@sha256:") then
-        IO.eprintln "full-from-lite requires TYPEDNOTES_LITE_IMAGE pinned to the currently deployed Lite digest"
+        IO.eprintln "full-from-lite requires TYPEDNOTES_LITE_IMAGE pinned to a tested bundle digest (the deployed Lite digest for initial promotion)"
         return 2
       let metadata ← IO.Process.output { cmd := "python3", args := #["-m", "images.deployment", image] }
       if metadata.exitCode != 0 then
         IO.eprint metadata.stderr
         return 1
-      match Lean.Json.parse metadata.stdout >>= Lean.fromJson? (α := LiteDeployment) with
+      match Lean.Json.parse metadata.stdout >>= Lean.fromJson? (α := BundleDeployment) with
       | .error error => IO.eprintln error; return 1
       | .ok deployment =>
         match (if mode == "lite" then typednotesLiteDeployed deployment else Promotion.deployed deployment) with

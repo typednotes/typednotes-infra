@@ -15,10 +15,14 @@ share durable resource identities. The original `full` fleet remains independent
 
 ## Lite deployment (default)
 
-**Release 0.10.0** gives Lite separate application and vault databases and an
-in-place upgrade to the distributed topology. See [the release notes](docs/release-0.10.0.md).
+**Release 0.10.1** fixes worker startup and promoted vault connectivity, shares
+storage/bundle construction, and persists the workflow topology with downgrade
+protection. See [the release notes](docs/release-0.10.1.md).
 
-CI **Apply**, **Plan**, **Destroy** and the local CLI default to **`lite`**.
+The local CLI defaults to **`lite`**. CI **Apply**, **Plan** and **Destroy** default
+to **`current`**, using repository variable `TYPEDNOTES_DEPLOYMENT` (Lite when unset).
+Push-triggered plans use that same persisted topology and, for promoted full,
+the `TYPEDNOTES_LITE_IMAGE` repository pin.
 Lite builds the app, Ledger, Liaison, Secrets, Lode and Lun from their newest
 stable release tags (frozen to commits per build), then deploys **one warm Serverless Container and two
 Serverless SQL databases**. App, ledger and audit histories share the application
@@ -70,9 +74,11 @@ changes. [Build, schema-alignment and trigger details](images/README.md).
 
 ## What's declared
 
-[`Fleet/Lite.lean`](Fleet/Lite.lean) declares Lite.
-[`Fleet/Promotion.lean`](Fleet/Promotion.lean) derives full-from-lite from the
-full topology while preserving Lite's durable identities and public container.
+[`Fleet/Lite.lean`](Fleet/Lite.lean) selects Lite, and
+[`Fleet/Promotion.lean`](Fleet/Promotion.lean) selects full-from-lite.
+[`Fleet/Shared.lean`](Fleet/Shared.lean) constructs both from the same storage
+specs, explicit name layout and typed URL recipes. The bundle snapshot and
+migration handling are shared in [`Fleet/Bundle.lean`](Fleet/Bundle.lean).
 [`Fleet.lean`](https://github.com/typednotes/typednotes-infra/blob/main/Fleet.lean) declares the full fleet: the `typednotes` system of
 [`typednotes/typednotes`](https://github.com/typednotes/typednotes/tree/main)'s [`docs/architecture.md`](https://github.com/typednotes/typednotes/blob/main/docs/architecture.md),
 as far as it is built — 55 Scaleway resources in one **full-mode** apply.
@@ -532,7 +538,13 @@ rather than as connections failing to store.
 
 ## CI
 
-Apply, Plan and Destroy expose `lite`, `full-from-lite` and `full`, defaulting to `lite`.
+Apply, Plan and Destroy expose `current`, `lite`, `full-from-lite` and `full`,
+defaulting to the persisted `current` configuration. Before promotion set
+repository variables `TYPEDNOTES_DEPLOYMENT=full-from-lite` and
+`TYPEDNOTES_LITE_IMAGE` to the deployed fixed bundle digest. Subsequent updates
+replace that image pin with a newly tested bundle. The CLI independently refuses
+unsupported Lite downgrades/teardown when cloud resources show a full topology,
+including partial promotion and retained compute storage.
 Lite Apply reuses the Combined images publisher and deploys its immutable digest
 with matching SQL. Full Apply uses the existing service images.
 See [the Lite CI sequence](docs/lite.md#ci-deployment).

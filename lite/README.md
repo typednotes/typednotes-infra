@@ -90,10 +90,14 @@ migrations belonging to them. There are no stale source-ref defaults. See
 - **`Dockerfile`** assembles Lite; `local/Dockerfile` adds PostgreSQL.
 - **[`runtime.py`](runtime.py)** supervises the six processes in Lite, or one
   selected service (`TYPEDNOTES_SERVICE`) per container after promotion.
-- **[`Fleet/Lite.lean`](../Fleet/Lite.lean)** declares the serverless container,
-  databases, migrations and supporting cloud resources.
-- **[`Fleet/Promotion.lean`](../Fleet/Promotion.lean)** expands Lite's runtime
-  topology while reusing storage, credentials and the public container identity.
+- **[`Fleet/Shared.lean`](../Fleet/Shared.lean)** builds Lite and promoted full
+  from one storage declaration and an explicit physical-name layout.
+- **[`Fleet/Lite.lean`](../Fleet/Lite.lean)** and
+  **[`Fleet/Promotion.lean`](../Fleet/Promotion.lean)** select the topology.
+- **[`Fleet/Bundle.lean`](../Fleet/Bundle.lean)** shares bundle validation and
+  migration conversion across those topologies.
+- **[`Fleet/Topology.lean`](../Fleet/Topology.lean)** refuses Lite reconciliation
+  or teardown after cloud resources indicate full/partial promotion.
 - **[`storage.py`](storage.py)** copies and verifies a legacy single-DB vault
   before archiving the original table and migration history.
 - **[`images.yml`](../.github/workflows/images.yml)** checks service tags every

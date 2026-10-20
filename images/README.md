@@ -126,6 +126,14 @@ Successful jobs from an earlier attempt of the same workflow run can be reused
 when retrying failed jobs; unrelated runs, changed snapshots and mutable image
 tags are refused. Artifact uploads replace their own earlier-attempt receipts.
 
+The verification VM exports the actual full-from-lite service environments and
+secret-input bindings with `scripts/service-config.lean`. Assembly smoke tests
+consume this artifact. The fixture uses provider-shaped HTTP endpoints on port
+80, rather than replacing them with the binaries' internal listener ports.
+Service commands, allowlists and required configuration are defined once in
+`lite/runtime.py`; standalone supervision constructs only its selected service.
+Worker preparation is stdlib-only and is tested with its scrubbed environment.
+
 ### Runner disk budget
 
 The first v0.9.0 [Combined images run](https://github.com/typednotes/typednotes-infra/actions/runs/39017091446)
@@ -185,3 +193,9 @@ python3 local/check-image.py "$LOCAL_IMAGE"
 Assembly receipt validation and both architecture/source-only build graphs are
 covered by `images/tests/test_assembly.py`; graph inspection needs the Docker
 Buildx CLI, but does not require a running Docker daemon.
+
+For a local image smoke run, generate its service fixture first:
+
+```sh
+lake env lean --run scripts/service-config.lean docker .images/manifest.json > .images/service-config.json
+```

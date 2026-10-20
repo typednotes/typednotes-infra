@@ -1,0 +1,42 @@
+name: Deployment configuration
+
+on:
+  workflow_call:
+    inputs:
+      deployment:
+        type: string
+        default: current
+      lite_image:
+        type: string
+        default: ''
+      operation:
+        type: string
+        required: true
+    outputs:
+      deployment:
+        value: ${{ jobs.select.outputs.deployment }}
+      image:
+        value: ${{ jobs.select.outputs.image }}
+
+permissions:
+  contents: read
+
+jobs:
+  select:
+    runs-on: ubuntu-latest
+    outputs:
+      deployment: ${{ steps.config.outputs.deployment }}
+      image: ${{ steps.config.outputs.image }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - id: config
+        name: Resolve repository topology and bundle
+        env:
+          REQUESTED_DEPLOYMENT: ${{ inputs.deployment }}
+          REQUESTED_IMAGE: ${{ inputs.lite_image }}
+          CONFIGURED_DEPLOYMENT: ${{ vars.TYPEDNOTES_DEPLOYMENT }}
+          CONFIGURED_IMAGE: ${{ vars.TYPEDNOTES_LITE_IMAGE }}
+          DEPLOYMENT_OPERATION: ${{ inputs.operation }}
+        run: python3 scripts/deployment-config.py

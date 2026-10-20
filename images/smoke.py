@@ -20,6 +20,13 @@ def wait_for(check, description, timeout=180):
     raise RuntimeError(f"Timed out waiting for {description}")
 
 
+def service_environment(declared, values):
+    """Bind fixture values using the fleet's actual secret-input mapping.
+    Optional integrations stay absent; runtime contracts reject missing core values.
+    """
+    return declared["env"] | {key: values[origin] for key, origin in declared["secretInputs"].items() if origin in values}
+
+
 WORKER_CHECK = '''
 import json, os, pathlib, pwd, subprocess
 from lite.runtime import services
@@ -50,7 +57,8 @@ def request(path, body=None, token=None):
     headers = {"Content-Type": "application/json"}
     if token:
         headers["Authorization"] = "Bearer " + token
-    with urlopen(Request("http://127.0.0.1:8200/v1/" + path,
+    port = os.environ["PORT"] if os.environ.get("TYPEDNOTES_SERVICE") == "vault" else "8200"
+    with urlopen(Request("http://127.0.0.1:" + port + "/v1/" + path,
                          data=None if body is None else json.dumps(body).encode(), headers=headers)) as response:
         return json.loads(response.read() or b"{}")
 password = os.environ.get("SECRETS_BOOTSTRAP_PASSWORD") or os.environ.get("SECRETS_SERVER_BOOTSTRAP_PASSWORD")

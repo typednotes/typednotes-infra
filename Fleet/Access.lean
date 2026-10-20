@@ -15,10 +15,18 @@ def operatorCidrs : List String :=
   ["92.146.149.116/32", "2a01:cb04:31d:1d00:943a:f26b:7e49:b97f/128",
    "90.92.120.28/32", "2a01:cb04:1a6:4300:5cca:5ad4:bcac:b7fc/128"]
 
-/-- Lean vault clients accept a host rather than a URL. Parse the provider's
-    private URL, without reconstructing it from a name or opaque UUID. -/
-def privateHost (url : String) : String :=
-  ((Network.HTTP.Simple.parseUrl url).map (·.host)).getD ""
+/-- Native private URLs use the platform's HTTP front door, not the vault
+    executable's listening port. Preserve explicit ports and TLS as well. -/
+def vaultEnvironment (url username : String) : List (String × String) :=
+  match Network.HTTP.Simple.parseUrl url with
+  | none => []
+  | some endpoint =>
+    [("SECRETS_HOST", endpoint.host), ("SECRETS_PORT", toString endpoint.port.toNat),
+     ("SECRETS_INSECURE", if endpoint.isSecure then "0" else "1"), ("SECRETS_USERNAME", username)]
+
+#guard (vaultEnvironment "http://vault.example.internal" "lun").contains ("SECRETS_PORT", "80")
+#guard (vaultEnvironment "https://vault.example:9443" "liaison").contains ("SECRETS_PORT", "9443")
+#guard (vaultEnvironment "https://vault.example" "liaison").contains ("SECRETS_INSECURE", "0")
 
 def gatewayImage := "docker.io/library/nginx:alpine"
 

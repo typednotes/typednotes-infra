@@ -35,8 +35,8 @@ on:
         description: Deployment architecture to destroy
         required: true
         type: choice
-        default: lite
-        options: [lite, full-from-lite, full]
+        default: current
+        options: [current, lite, full-from-lite, full]
       confirm:
         description: 'Type "destroy typednotes" (or, with the box below ticked, "destroy typednotes and its data")'
         required: true
@@ -55,7 +55,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  configuration:
+    uses: ./.github/workflows/deployment-config.yml
+    with:
+      deployment: ${{ inputs.deployment }}
+      operation: destroy
   destroy:
+    needs: configuration
     runs-on: ubuntu-latest
     if: >-
       (!inputs.destroy_databases && inputs.confirm == 'destroy typednotes') ||
@@ -66,7 +72,7 @@ jobs:
     # `--keep-data` always.) Every teardown command below takes it, so the
     # preview, the teardown and the check cannot disagree.
     env:
-      TYPEDNOTES_DEPLOYMENT: ${{ inputs.deployment }}
+      TYPEDNOTES_DEPLOYMENT: ${{ needs.configuration.outputs.deployment }}
       KEEP_DATA: ${{ !inputs.destroy_databases && '--keep-data' || '' }}
     steps:
       - uses: actions/checkout@v7.0.1

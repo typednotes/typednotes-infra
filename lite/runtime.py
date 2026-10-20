@@ -14,8 +14,6 @@ from pathlib import Path
 from urllib.error import URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
-from images.database import environment as database_environment
-
 
 @dataclass
 class Service:
@@ -27,119 +25,116 @@ class Service:
     token: str | None = None
 
 
+OAUTH_PREFIXES = ("GITHUB_CLIENT_", "GOOGLE_CLIENT_", "GITLAB_CLIENT_", "DROPBOX_CLIENT_",
+                  "SLACK_", "WHATSAPP_", "MICROSOFT_CLIENT_")
+VAULT_CLIENT = ("SECRETS_HOST", "SECRETS_PORT", "SECRETS_INSECURE", "SECRETS_USERNAME", "SECRETS_PASSWORD")
+
+
+@dataclass(frozen=True)
+class ServiceDefinition:
+    command: str
+    port: int
+    health_path: str
+    required: tuple[str, ...]
+    optional: tuple[str, ...] = ()
+    prefixes: tuple[str, ...] = ()
+    token: str | None = None
+    credentials: tuple[tuple[str, str], ...] = ()
+
+
+# One service contract for combined and standalone supervision. Only topology
+# supplies different addresses and the mapping from bundle credentials.
+DEFINITIONS = {
+    "vault": ServiceDefinition("/usr/local/bin/secrets-server", 8200, "/v1/sys/health",
+        ("SECRETS_SERVER_STORAGE_DATABASE_URL", "SECRETS_MASTER_KEY", "SECRETS_SERVER_BOOTSTRAP_PASSWORD",
+         "SECRETS_SERVER_SERVICE_IDENTITIES", "APP_SECRETS_PASSWORD", "LIAISON_SECRETS_PASSWORD", "LUN_SECRETS_PASSWORD"),
+        ("SECRETS_MASTER_KEY_RETIRED",), credentials=(("SECRETS_SERVER_BOOTSTRAP_PASSWORD", "SECRETS_BOOTSTRAP_PASSWORD"),)),
+    "ledger": ServiceDefinition("/usr/local/bin/ledger", 8081, "/health", ("DATABASE_URL",),
+        ("LEDGER_SWEEP_INTERVAL_SECONDS",)),
+    "liaison": ServiceDefinition("/usr/local/bin/liaison", 8082, "/_health",
+        ("DATABASE_URL", "LIAISON_ROOT_KEY", *VAULT_CLIENT), prefixes=OAUTH_PREFIXES,
+        credentials=(("SECRETS_PASSWORD", "LIAISON_SECRETS_PASSWORD"),)),
+    "lun": ServiceDefinition("/usr/local/bin/lun", 8083, "/_health",
+        ("LUN_TOKEN", "LUN_ID_SALT", "LUN_LIAISON_URL", *VAULT_CLIENT),
+        ("LUN_WORKERS", "LUN_BUILD_TIMEOUT", "LUN_FETCH_TIMEOUT", "LUN_CALL_TIMEOUT"), token="LUN_TOKEN",
+        credentials=(("SECRETS_PASSWORD", "LUN_SECRETS_PASSWORD"),)),
+    "lode": ServiceDefinition("/usr/local/bin/lode", 8084, "/_health",
+        ("LODE_TOKEN", "LODE_LUN_TOKEN", "LODE_LUN_URL", "LODE_LIAISON_URL"),
+        ("LODE_MAX_STEPS", "LODE_MODEL_TIMEOUT", "LODE_GIT_TIMEOUT", "LODE_CHECK_TIMEOUT", "LODE_LUN_BUILD_TIMEOUT", "LODE_LUN_CALL_TIMEOUT"),
+        token="LODE_TOKEN", credentials=(("LODE_LUN_TOKEN", "LUN_TOKEN"),)),
+    "app": ServiceDefinition("/usr/local/app/server", 8080, "/api/health",
+        ("DATABASE_URL", "LIAISON_ROOT_KEY", "LODE_TOKEN", "LUN_TOKEN", "SECRETS_URL", "SECRETS_PASSWORD", "LIAISON_URL", "LODE_URL", "LUN_URL"),
+        ("PUBLIC_URL", "SECRETS_USERNAME"), OAUTH_PREFIXES + ("TYPEDNOTES_",),
+        credentials=(("SECRETS_PASSWORD", "APP_SECRETS_PASSWORD"),)),
+}
+
+
+def loopback_configuration(name, source):
+    config = dict(source)
+    for target, origin in DEFINITIONS[name].credentials:
+        if not source.get(origin):
+            raise ValueError("Missing configuration: " + origin)
+        config[target] = source[origin]
+    def url(service):
+        return f"http://127.0.0.1:{DEFINITIONS[service].port}"
+    if name in ("liaison", "lun"):
+        config.update(SECRETS_HOST="127.0.0.1", SECRETS_PORT="8200", SECRETS_INSECURE="1", SECRETS_USERNAME=name)
+    if name == "app":
+        config.update(SECRETS_URL=url("vault"), SECRETS_USERNAME="typednotes-app",
+                      LIAISON_URL=url("liaison"), LODE_URL=url("lode"), LUN_URL=url("lun"))
+    if name in ("lode", "lun"):
+        config[name.upper() + "_LIAISON_URL"] = url("liaison")
+    if name == "lode":
+        config["LODE_LUN_URL"] = url("lun")
+    return config
+
+
 def services(source, *, state_root=None, allow_compute=False, standalone=None):
-    """Allowlist inherited variables: workers must not inherit the parent's
-    vault master key, warrant root, database URL or provider credentials.
-    Every service also runs under a different Unix identity.
+    """Construct only selected services, with explicit topology and allowlists.
+    Worker preparation stays stdlib-only, including under a scrubbed environment.
     """
-    required = (
-        "DATABASE_URL", "SECRETS_SERVER_STORAGE_DATABASE_URL", "SECRETS_MASTER_KEY", "SECRETS_BOOTSTRAP_PASSWORD",
-        "SECRETS_SERVER_SERVICE_IDENTITIES", "LIAISON_ROOT_KEY",
-        "APP_SECRETS_PASSWORD", "LIAISON_SECRETS_PASSWORD", "LUN_SECRETS_PASSWORD",
-        "LODE_TOKEN", "LUN_TOKEN", "LUN_ID_SALT",
-    )
-    if standalone is not None:
-        requirements = {
-            "vault": ("SECRETS_SERVER_STORAGE_DATABASE_URL", "SECRETS_MASTER_KEY",
-                      "SECRETS_SERVER_BOOTSTRAP_PASSWORD", "SECRETS_SERVER_SERVICE_IDENTITIES",
-                      "APP_SECRETS_PASSWORD", "LIAISON_SECRETS_PASSWORD", "LUN_SECRETS_PASSWORD"),
-            "ledger": ("DATABASE_URL",),
-            "liaison": ("DATABASE_URL", "LIAISON_ROOT_KEY", "SECRETS_HOST", "SECRETS_PASSWORD"),
-            "lun": ("LUN_TOKEN", "LUN_ID_SALT", "LUN_LIAISON_URL", "SECRETS_HOST", "SECRETS_PASSWORD"),
-            "lode": ("LODE_TOKEN", "LODE_LUN_TOKEN", "LODE_LUN_URL", "LODE_LIAISON_URL"),
-            "app": ("DATABASE_URL", "LIAISON_ROOT_KEY", "LODE_TOKEN", "LUN_TOKEN", "SECRETS_URL",
-                    "SECRETS_PASSWORD", "LIAISON_URL", "LODE_URL", "LUN_URL"),
-        }
-        if standalone not in requirements:
-            raise ValueError("Unknown standalone service")
-        required = requirements[standalone]
-    missing = [key for key in required if not source.get(key)]
-    if missing:
-        raise ValueError("Missing configuration: " + ", ".join(missing))
+    if standalone is not None and standalone not in DEFINITIONS:
+        raise ValueError("Unknown standalone service")
     if source.get("COMPUTE_DB_URL") and not (allow_compute or standalone == "app"):
         raise ValueError("Lite uses Serverless SQL; COMPUTE_DB_URL must be unset")
-    port = int(source.get("PORT", "8080"))
-    if not 1 <= port <= 65535 or (standalone is None and port in (8081, 8082, 8083, 8084, 8200)):
+    public_port = int(source.get("PORT", "8080"))
+    internal_ports = {definition.port for name, definition in DEFINITIONS.items() if name != "app"}
+    if not 1 <= public_port <= 65535 or (standalone is None and public_port in internal_ports):
         raise ValueError("PORT must be valid and distinct from Lite's internal ports")
-
-    def home(name):
-        return str(Path(state_root or "/var/lib") / name)
-
-    def environment(name, keys=(), prefixes=(), **overrides):
-        env = {key: source[key] for key in ("PATH", "SSL_CERT_FILE", "SSL_CERT_DIR") if key in source}
-        env.update({key: value for key, value in source.items()
-                    if key in keys or any(key.startswith(prefix) for prefix in prefixes)})
-        env.update(HOME=home(name), LANG="C.UTF-8", **overrides)
-        return env
-
-    oauth_prefixes = ("GITHUB_CLIENT_", "GOOGLE_CLIENT_", "GITLAB_CLIENT_",
-                      "DROPBOX_CLIENT_", "SLACK_", "WHATSAPP_", "MICROSOFT_CLIENT_")
-    vault = Service("vault", ["/usr/local/bin/secrets-server"], environment(
-        "vault", ("SECRETS_MASTER_KEY", "SECRETS_MASTER_KEY_RETIRED",
-                  "SECRETS_SERVER_SERVICE_IDENTITIES", "APP_SECRETS_PASSWORD",
-                  "LIAISON_SECRETS_PASSWORD", "LUN_SECRETS_PASSWORD"),
-        SECRETS_SERVER_LISTEN_ADDR="127.0.0.1:8200",
-        SECRETS_SERVER_STORAGE_DATABASE_URL=source.get("SECRETS_SERVER_STORAGE_DATABASE_URL", ""),
-        SECRETS_SERVER_STORAGE_MIGRATE="false",
-        SECRETS_SERVER_BOOTSTRAP_USERNAME="admin",
-        SECRETS_SERVER_BOOTSTRAP_PASSWORD=source.get("SECRETS_BOOTSTRAP_PASSWORD", ""),
-    ), "http://127.0.0.1:8200/v1/sys/health")
-    ledger = Service("ledger", ["/usr/local/bin/ledger"], environment(
-        "ledger", ("DATABASE_URL", "LEDGER_SWEEP_INTERVAL_SECONDS"), PORT="8081",
-    ), "http://127.0.0.1:8081/health")
-    liaison = Service("liaison", ["/usr/local/bin/liaison"], environment(
-        "liaison", ("DATABASE_URL", "LIAISON_ROOT_KEY"), oauth_prefixes,
-        LIAISON_PORT="8082", SECRETS_HOST="127.0.0.1", SECRETS_PORT="8200",
-        SECRETS_INSECURE="1", SECRETS_USERNAME="liaison",
-        SECRETS_PASSWORD=source.get("LIAISON_SECRETS_PASSWORD", ""),
-    ), "http://127.0.0.1:8082/_health")
-    lun = Service("lun", ["/usr/local/bin/lun"], environment(
-        "lun", ("LUN_TOKEN", "LUN_ID_SALT", "LUN_WORKERS", "LUN_BUILD_TIMEOUT",
-                "LUN_FETCH_TIMEOUT", "LUN_CALL_TIMEOUT"),
-        LUN_PORT="8083", LUN_WORKDIR=home("lun") + "/work", LUN_PACKAGE_CACHE="/opt/lun/cache",
-        LUN_LIAISON_URL="http://127.0.0.1:8082", ELAN_HOME=home("lun") + "/elan",
-        SECRETS_HOST="127.0.0.1", SECRETS_PORT="8200", SECRETS_INSECURE="1",
-        SECRETS_USERNAME="lun", SECRETS_PASSWORD=source.get("LUN_SECRETS_PASSWORD", ""),
-    ), "http://127.0.0.1:8083/_health", token=source.get("LUN_TOKEN"))
-    lode = Service("lode", ["/usr/local/bin/lode"], environment(
-        "lode", ("LODE_TOKEN", "LODE_MAX_STEPS", "LODE_MODEL_TIMEOUT", "LODE_GIT_TIMEOUT",
-                 "LODE_CHECK_TIMEOUT", "LODE_LUN_BUILD_TIMEOUT", "LODE_LUN_CALL_TIMEOUT"),
-        LODE_PORT="8084", LODE_WORKDIR=home("lode") + "/work", LODE_PACKAGE_CACHE="/opt/lode/cache",
-        LODE_LINEN_REV=source.get("LODE_LINEN_REF", "v1.12.0"), ELAN_HOME=home("lode") + "/elan",
-        LODE_TOOLCHAIN=source.get("LODE_TOOLCHAIN", "leanprover/lean4:v4.34.0"),
-        LODE_LIAISON_URL="http://127.0.0.1:8082", LODE_LUN_URL="http://127.0.0.1:8083",
-        LODE_LUN_TOKEN=source.get("LUN_TOKEN", ""),
-    ), "http://127.0.0.1:8084/_health", token=source.get("LODE_TOKEN"))
-    app = Service("app", ["/usr/local/app/server"], environment(
-        "app", ("DATABASE_URL", "LIAISON_ROOT_KEY", "LODE_TOKEN", "LUN_TOKEN", "PUBLIC_URL"),
-        oauth_prefixes + ("TYPEDNOTES_",),
-        IP="0.0.0.0", PORT=str(port),
-        SECRETS_URL="http://127.0.0.1:8200", SECRETS_USERNAME="typednotes-app",
-        SECRETS_PASSWORD=source.get("APP_SECRETS_PASSWORD", ""),
-        LIAISON_URL="http://127.0.0.1:8082", LODE_URL="http://127.0.0.1:8084",
-        LUN_URL="http://127.0.0.1:8083",
-    ), f"http://127.0.0.1:{port}/api/health")
-    if (allow_compute or standalone == "app") and source.get("COMPUTE_DB_URL"):
-        app.env["COMPUTE_DB_URL"] = source["COMPUTE_DB_URL"]
-    if standalone is not None:
-        service = next(service for service in (vault, ledger, liaison, lun, lode, app) if service.name == standalone)
-        # Full's declaration supplies remote endpoints and service-specific
-        # credentials. Retain the same binary, toolchains and Unix identity as Lite.
-        for key in service.env:
-            if key in source and key not in ("HOME", "PATH", "LANG"):
-                service.env[key] = source[key]
-        if standalone == "vault":
-            service.env["SECRETS_SERVER_LISTEN_ADDR"] = f"0.0.0.0:{port}"
-            service.env["SECRETS_SERVER_BOOTSTRAP_PASSWORD"] = source["SECRETS_SERVER_BOOTSTRAP_PASSWORD"]
-        elif standalone == "ledger":
-            service.env["PORT"] = str(port)
-        elif standalone in ("liaison", "lun", "lode"):
-            service.env[standalone.upper() + "_PORT"] = str(port)
-        path = "/v1/sys/health" if standalone == "vault" else "/health" if standalone == "ledger" else "/api/health" if standalone == "app" else "/_health"
-        service.health = f"http://127.0.0.1:{port}{path}"
-        return [service]
-    # Do not accept public traffic until every dependency is serving.
-    return [vault, ledger, liaison, lun, lode, app]
+    result = []
+    for name in ([standalone] if standalone else DEFINITIONS):
+        definition = DEFINITIONS[name]
+        config = source if standalone else loopback_configuration(name, source)
+        missing = [key for key in definition.required if not config.get(key)]
+        if missing:
+            raise ValueError("Missing configuration: " + ", ".join(missing))
+        keys = definition.required + definition.optional + ("PATH", "SSL_CERT_FILE", "SSL_CERT_DIR")
+        env = {key: value for key, value in config.items()
+               if key in keys or any(key.startswith(prefix) for prefix in definition.prefixes)}
+        home = str(Path(state_root or "/var/lib") / name)
+        env.update(HOME=home, LANG="C.UTF-8")
+        port = public_port if standalone or name == "app" else definition.port
+        if name == "vault":
+            env.update(SECRETS_SERVER_LISTEN_ADDR=f"{'0.0.0.0' if standalone else '127.0.0.1'}:{port}",
+                       SECRETS_SERVER_STORAGE_MIGRATE="false", SECRETS_SERVER_BOOTSTRAP_USERNAME="admin")
+        elif name in ("app", "ledger"):
+            env["PORT"] = str(port)
+            if name == "app":
+                env["IP"] = "0.0.0.0"
+                if source.get("COMPUTE_DB_URL"):
+                    env["COMPUTE_DB_URL"] = source["COMPUTE_DB_URL"]
+        else:
+            env[name.upper() + "_PORT"] = str(port)
+        if name in ("lode", "lun"):
+            env.update(ELAN_HOME=home + "/elan")
+            env[name.upper() + "_WORKDIR"] = home + "/work"
+            env[name.upper() + "_PACKAGE_CACHE"] = f"/opt/{name}/cache"
+        if name == "lode":
+            env.update(LODE_LINEN_REV=source.get("LODE_LINEN_REF", "v1.12.0"),
+                       LODE_TOOLCHAIN=source.get("LODE_TOOLCHAIN", "leanprover/lean4:v4.34.0"))
+        result.append(Service(name, [definition.command], env, f"http://127.0.0.1:{port}{definition.health_path}",
+                              token=source.get(definition.token) if definition.token else None))
+    return result
 
 
 def healthy(service):
@@ -156,6 +151,9 @@ def check_storage(source):
     """A legacy vault must be copied before any new vault can bootstrap.
     Local uses its own bootstrap and deliberately retains one logical DB.
     """
+    # Worker preparation re-executes this module without PYTHONPATH. It does
+    # not need database helpers, so keep this dependency on the DB-only path.
+    from images.database import environment as database_environment
     result = subprocess.run(
         ["psql", "-X", "-w", "-At", "-v", "ON_ERROR_STOP=1", "-c",
          "SELECT to_regclass('public.kv_store') IS NOT NULL;"],
