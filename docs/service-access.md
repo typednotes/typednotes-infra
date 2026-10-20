@@ -32,6 +32,8 @@ The existing network is `9dd55512-09f6-4e7a-a864-19c82f348ab8`, in dedicated VPC
 resources survive fleet teardown; Infra does not manage VPC lifecycle.
 No VPN is needed. Service URLs come from the provider's observed native private
 URL, including its scheme; vault clients extract the host and use private HTTP.
+`vaultEnvironment` derives host, front-door port and TLS together from that URL;
+it does not substitute the vault executable's internal listener port.
 
 ## Operator addresses
 
@@ -49,13 +51,19 @@ added; network changes and IPv6 privacy-address rotations need an explicit edit.
 ## Plan and apply
 
 ```sh
+export TYPEDNOTES_DEPLOYMENT=full # independent original deployment
 lake build
 lake exe typednotes-infra check
 lake exe typednotes-infra plan
 lake script run apply --yes --refresh-secrets
 ```
 
-`Main.lean` delegates directly to Infra. Native fields are included at resource
+For a promoted installation use `full-from-lite` and a tested
+`TYPEDNOTES_LITE_IMAGE` digest instead. CI uses the repository's persisted
+`current` topology and image pin; see [promotion and later updates](lite.md#upgrade-lite-to-full-in-place).
+
+`Main.lean` delegates reconciliation to Infra after its read-only topology
+check for Lite commands. Native fields are included at resource
 creation and compared on plan. Mutable endpoint changes re-materialise dependent
 callers; `--refresh-secrets` updates connection recipes/copies after the new
 endpoint is available. Unsafe custom-domain/trigger bypasses on private services

@@ -3,7 +3,7 @@ name: Combined images
 on:
   push:
     branches: [main]
-    paths: ['images/**', 'local/**', 'lite/**', 'scripts/build-images.sh', '.dockerignore', '.github/workflows/images.yml']
+    paths: ['images/**', 'local/**', 'lite/**', 'Fleet/**', 'Fleet.lean', 'scripts/build-images.sh', 'scripts/service-config.lean', '.dockerignore', '.github/workflows/images.yml']
   schedule:
     - cron: '7,22,37,52 * * * *'
   repository_dispatch:
@@ -100,20 +100,32 @@ jobs:
       - name: Install native FFI dependencies
         run: sudo apt-get update && sudo apt-get install -y libpq-dev libssl-dev libsecret-1-dev pkg-config ca-certificates
       - uses: leanprover/lean-action@v1.6.0
+      - uses: actions/download-artifact@v4
+        with:
+          name: combined-source-bundle
+          path: .images
       - name: Verify all layouts, policy correspondence and bootstrap tests
         run: |
           TYPEDNOTES_DEPLOYMENT=lite lake exe typednotes-infra check
           TYPEDNOTES_DEPLOYMENT=full lake exe typednotes-infra check
           TYPEDNOTES_DEPLOYMENT=full-from-lite lake exe typednotes-infra check
           TYPEDNOTES_DEPLOYMENT=lite-storage lake exe typednotes-infra check
+          lake env lean --run scripts/check-topology.lean
           python3 -m unittest discover -s lite/tests -v
           python3 -m unittest discover -s images/tests -v
           python3 -m unittest discover -s local/tests -v
           bash scripts/prepare-image-runner.sh --dry-run
           lake env lean --run scripts/lite-config.lean > "$RUNNER_TEMP/lite-config.json"
           jq -e --slurpfile actual "$RUNNER_TEMP/lite-config.json" '.vaultIdentities == $actual[0].vaultIdentities' images/vault-identities.json
+          lake env lean --run scripts/service-config.lean docker .images/manifest.json > "$RUNNER_TEMP/service-config.json"
         env:
           RUNNER_ENVIRONMENT: ${{ runner.environment }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: service-config
+          path: ${{ runner.temp }}/service-config.json
+          retention-days: 7
+          overwrite: true
 
   services:
     needs: [resolve, verify]
@@ -230,6 +242,10 @@ jobs:
           pattern: service-*-${{ matrix.arch }}
           merge-multiple: true
           path: .images/service-images
+      - uses: actions/download-artifact@v4
+        with:
+          name: service-config
+          path: .images
       - name: Validate artifact identities and isolate the assembly graph
         run: |
           python3 -m images.assembly .images/manifest.json .images/service-images \

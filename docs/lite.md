@@ -1,12 +1,14 @@
 # Typednotes Lite
 
-Lite is the default deployment architecture for the local CLI and the CI
-Apply / Plan / Destroy workflows. Select `full-from-lite` to expand it in place,
-or `full` for the independent original distributed fleet.
+Lite is the local CLI default and the initial CI topology. Apply / Plan /
+Destroy default to `current`, resolved from repository variable
+`TYPEDNOTES_DEPLOYMENT` (initially `lite` when unset). Push-triggered plans use
+that same persisted selection. `full-from-lite` expands Lite in place; `full`
+is the independent original distributed fleet.
 
 ## Runtime and storage
 
-`Fleet/Lite.lean` declares one public Serverless Container (`typednotes-lite`)
+`Fleet/Lite.lean` selects one public Serverless Container (`typednotes-lite`)
 and two Serverless SQL databases (`lite-typednotes-db` and
 `lite-typednotes-secrets-db`) in Paris. Its namespace,
 three IAM identities (migrator / observer / runtime), keys and Secret Manager
@@ -28,6 +30,11 @@ supervisor receives distinct `DATABASE_URL` and
 Four service migration histories from the selected image are applied by Infra.
 The combined container waits for all four. No serving process migrates itself
 or receives the migrator's credentials.
+
+`Fleet/Shared.lean` constructs both topologies from full's single storage
+declaration, an explicit physical-name layout and typed connection recipes.
+`Fleet/Bundle.lean` validates and applies one `BundleDeployment` snapshot to
+either topology; migration conversion is shared too.
 
 Built-in PostgreSQL notebook connectors and `db` sinks are unavailable:
 Scaleway Serverless SQL does not support their actor-role provisioning. Lite
@@ -68,7 +75,7 @@ See [the shared build guide](../images/README.md) for the metadata boundary.
 
 ## CI deployment
 
-Run **Apply** with `deployment: lite` (the default) and the existing
+Run **Apply** with `deployment: current` (initially Lite) and the existing
 `typednotes` confirmation. The workflow:
 
 1. Calls the reusable Combined images publisher. New service versions or
@@ -112,7 +119,13 @@ metadata helper as well as by the build tools.
 
 ## Startup, shutdown and recovery
 
-`lite/runtime.py` starts the vault, ledger, liaison, Lun and Lode, waits for their
+`lite/runtime.py` constructs services from one set of service definitions.
+Combined mode supplies loopback endpoints; standalone mode requires the remote
+endpoint configuration from the fleet. Native private HTTP URLs use front-door
+port 80, independently of the process's container listening port. Host, port and
+TLS are derived together from the observed vault URL.
+
+The supervisor starts the vault, ledger, liaison, Lun and Lode, waits for their
 health endpoints, then starts the public app. Any required process exiting—even
 with exit code zero—stops the others and exits nonzero so the platform can recycle
 the instance. Shutdown signals reach compiler/worker process groups; Tini reaps
@@ -132,7 +145,7 @@ regenerate interrupted writer work. Retain a durable copy of the vault master ke
 
 ## Upgrade Lite to full in place
 
-`Fleet/Promotion.lean` derives the distributed fleet over Lite's existing
+`Fleet/Promotion.lean` selects the distributed topology over Lite's existing
 resource identities. `TYPEDNOTES_DEPLOYMENT=full-from-lite` (also available in
 Apply / Plan / Destroy) keeps both databases, all four migration histories, IAM
 identities, encryption key, service credentials and namespace. The public
@@ -144,39 +157,64 @@ gateway are added using full's network/access policies.
 All six services run the **same immutable Lite image** with a service selector
 (`TYPEDNOTES_SERVICE`). This retains the exact binaries, policies, worker caches
 and SQL already deployed; promotion never substitutes independently moving
-service `latest` images. Bundles must declare `runtimeVersion: 2` (built with
-Infra 0.10.0 or later). Older bundles are refused before cloud reconciliation.
+service `latest` images. Bundles must declare `runtimeVersion: 2`, introduced in
+Typednotes Infra 0.10.0. Use a bundle built from **0.10.1 or later** for the worker
+startup and standalone-endpoint fixes. Older bundle formats are refused before
+cloud reconciliation.
 
-1. For a pre-0.10.0 single-DB installation, complete the vault split below and
-   deploy the new Lite bundle first. Fresh two-DB installations skip this step.
+1. For a pre-0.10.0 single-DB installation, complete the vault split below.
+   Rebuild/publish and deploy a fixed Lite bundle from 0.10.1 or later before
+   initial promotion, including when upgrading an existing 0.10.0 two-DB install.
 2. Drain active notebook work. Ensure full's existing Private Network is ready
    ([service access](service-access.md)) and supply `COMPUTE_DB_PASSWORD`,
    `DB_INSPECTOR_USERNAME` and `DB_INSPECTOR_PASSWORD` in addition to Lite's secrets.
    Keep the same vault key, service passwords and `LUN_ID_SALT`.
-3. Read the **currently deployed** Lite digest from the container's image setting.
-   Use that digest for the whole promotion, including its convergence check:
+3. Read the **currently deployed** fixed Lite bundle digest from the container's
+   image setting. Initial promotion uses that same digest. Persist both the
+   intended topology and image in **repository** variables (Settings → Secrets
+   and variables → Actions → Variables), so future pushes plan the promoted
+   topology. Set the image first, then the topology:
 
 ```sh
 export TYPEDNOTES_DEPLOYMENT=full-from-lite
 export TYPEDNOTES_LITE_IMAGE=ghcr.io/typednotes/typednotes-lite@sha256:…
+gh variable set TYPEDNOTES_LITE_IMAGE --repo typednotes/typednotes-infra --body "$TYPEDNOTES_LITE_IMAGE"
+gh variable set TYPEDNOTES_DEPLOYMENT --repo typednotes/typednotes-infra --body "$TYPEDNOTES_DEPLOYMENT"
 scripts/check-deployment-secrets.sh
 lake exe typednotes-infra plan --refresh-secrets
 lake script run apply --yes --refresh-secrets
 lake exe typednotes-infra plan --refresh-secrets
 ```
 
-In CI select `full-from-lite` and supply the same digest in `lite_image`.
+In CI select `current`; the common configuration workflow resolves the same
+repository variables for Plan, Apply and Destroy. Promotion refuses to run
+until its topology and image have been persisted. An explicit `lite_image`
+must agree with the repository pin, preventing later automatic plans from
+selecting an older bundle.
 The workflow uses the selected existing image rather than publishing a new
 bundle during promotion. Verify `/api/health` (including `compute:true`), sign-in,
 existing notebooks and a connection whose credential is stored in the vault.
 The old combined runtime is replaced only after its new service dependencies
 have been created. Worker scratch state remains ephemeral.
 
-**Continue selecting `full-from-lite` for subsequent deployments and teardown.**
+### Updating a promoted deployment
+
+For subsequent releases, first publish and test a **new** combined bundle, then
+update repository variable `TYPEDNOTES_LITE_IMAGE` to its immutable digest.
+Run Plan and Apply with `current`. Initial promotion reuses the deployed image;
+later updates intentionally select a new tested image and its matching SQL.
+For local updates, set `TYPEDNOTES_DEPLOYMENT=full-from-lite` and the new digest
+in `TYPEDNOTES_LITE_IMAGE` before plan/apply/convergence.
+
+**Continue using `current` (configured as `full-from-lite`) for deployments and teardown.**
 It and Lite are two topologies of the **same fleet**, not independent
 environments. Applying Lite afterward would retire full-only resources,
 including compute storage; it is not a supported downgrade. In particular,
 never destroy `lite` as a cleanup step after promotion: that is the same fleet.
+The CLI checks ownership and actual cloud resources before Lite plan/apply,
+storage preparation, dump or teardown. It refuses a promoted app, full-only
+resources from a partial promotion, and retained compute storage. `--force`
+does not bypass this check. Resume `full-from-lite` after a partial promotion.
 Independent `full` remains a separate installation and does not perform this
 promotion.
 
@@ -247,7 +285,7 @@ is external to Infra. The README's domain procedure also applies to Lite, and
 deployment stays accessible at its own container endpoint, but configured OAuth
 redirects still use `PUBLIC_URL`.
 
-Destroy defaults to Lite and keeps its database/history with `--keep-data`, just
+Destroy defaults to the persisted `current` topology and keeps data with `--keep-data`, just
 as full mode does. Select the intended mode in the workflow before teardown.
 
 ## Verification
@@ -258,13 +296,18 @@ lake exe typednotes-infra check
 TYPEDNOTES_DEPLOYMENT=full lake exe typednotes-infra check
 TYPEDNOTES_DEPLOYMENT=full-from-lite lake exe typednotes-infra check
 TYPEDNOTES_DEPLOYMENT=lite-storage lake exe typednotes-infra check
+lake env lean --run scripts/check-topology.lean
 python3 -m unittest discover -s lite/tests -v
 LOCAL_POSTGRES_BIN=/path/to/postgresql/bin python3 -m unittest discover -s lite/tests -v
 python3 -m images.releases --output .images
+lake env lean --run scripts/service-config.lean docker .images/manifest.json > .images/service-config.json
 python3 lite/check-image.py ghcr.io/typednotes/typednotes-lite:latest .images/manifest.json
 ```
 
-The image check needs Docker and a built image matching the resolved snapshot.
+The image check uses the Lean-exported service environments, vault policies and
+secret-input bindings rather than a hand-maintained full-mode fixture. Supporting
+Docker services bind port 80 inside their test network namespace to model the
+platform HTTP front door. The image check needs Docker and a built image matching the resolved snapshot.
 It uses the packaged SQL with disposable Docker resources and makes no cloud or
 paid-provider calls. See [Local](../local/README.md) for the single-image,
 directory-backed runtime, including Podman usage.

@@ -514,9 +514,8 @@ fleet typednotes in paris where
       , cpuLimit := 2000
       , timeoutSec := 900
       , env := Expr.ap (Expr.map (fun vault broker =>
+          Typednotes.Access.vaultEnvironment vault.privateUrl "lun" ++
           [ ("LUN_PORT", "8080"), ("LUN_LIAISON_URL", broker.privateUrl)
-          , ("SECRETS_HOST", Typednotes.Access.privateHost vault.privateUrl), ("SECRETS_USERNAME", "lun")
-          , ("SECRETS_INSECURE", "1")
           , ("SSL_CERT_FILE", "/etc/ssl/certs/ca-certificates.crt")
           , ("SSL_CERT_DIR", "/etc/ssl/certs") ]) (observedOf secretsServer))
           (observedOf liaisonContainer)
@@ -630,9 +629,8 @@ fleet typednotes in paris where
       -- verify. liaison ≥ 0.4.1 bakes them into its image; kept here so the
       -- fleet does not depend on that.
       , env        := (observedOf secretsServer).map fun vault =>
-                        [ ("SECRETS_HOST", Typednotes.Access.privateHost vault.privateUrl), ("SECRETS_USERNAME", "liaison")
-                        , ("SECRETS_INSECURE", "1")
-                        , ("LIAISON_PORT", "8080")
+                        Typednotes.Access.vaultEnvironment vault.privateUrl "liaison" ++
+                        [ ("LIAISON_PORT", "8080")
                         , ("SSL_CERT_FILE", "/etc/ssl/certs/ca-certificates.crt")
                         , ("SSL_CERT_DIR", "/etc/ssl/certs") ]
       , secretEnv  := [ ("LIAISON_ROOT_KEY", liaisonRootKey)

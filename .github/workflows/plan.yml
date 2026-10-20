@@ -11,8 +11,8 @@ on:
         description: Deployment architecture
         required: true
         type: choice
-        default: lite
-        options: [lite, full-from-lite, full]
+        default: current
+        options: [current, lite, full-from-lite, full]
       lite_image:
         description: 'For full-from-lite: the currently deployed Lite image pinned with @sha256'
         required: false
@@ -25,11 +25,18 @@ permissions:
 # change; applying lives in `apply.yml`, which has no push trigger at all and
 # must be dispatched by hand.
 jobs:
+  configuration:
+    uses: ./.github/workflows/deployment-config.yml
+    with:
+      deployment: ${{ inputs.deployment || 'current' }}
+      lite_image: ${{ inputs.lite_image || '' }}
+      operation: plan
   build:
+    needs: configuration
     runs-on: ubuntu-latest
     env:
-      TYPEDNOTES_DEPLOYMENT: ${{ inputs.deployment || 'lite' }}
-      TYPEDNOTES_LITE_IMAGE: ${{ inputs.lite_image || 'ghcr.io/typednotes/typednotes-lite:latest' }}
+      TYPEDNOTES_DEPLOYMENT: ${{ needs.configuration.outputs.deployment }}
+      TYPEDNOTES_LITE_IMAGE: ${{ needs.configuration.outputs.image }}
     steps:
       - uses: actions/checkout@v7.0.1
       # Same native FFI dependency set as `infra`'s own CI, for the same reason:
@@ -59,6 +66,7 @@ jobs:
           TYPEDNOTES_DEPLOYMENT=full lake exe typednotes-infra check
           TYPEDNOTES_DEPLOYMENT=full-from-lite lake exe typednotes-infra check
           TYPEDNOTES_DEPLOYMENT=lite-storage lake exe typednotes-infra check
+          lake env lean --run scripts/check-topology.lean
           LOCAL_POSTGRES_BIN="$(pg_config --bindir)" python3 -m unittest discover -s lite/tests -v
           python3 -m unittest discover -s images/tests -v
           LOCAL_POSTGRES_BIN="$(pg_config --bindir)" python3 -m unittest discover -s local/tests -v
