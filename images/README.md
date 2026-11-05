@@ -194,6 +194,45 @@ Assembly receipt validation and both architecture/source-only build graphs are
 covered by `images/tests/test_assembly.py`; graph inspection needs the Docker
 Buildx CLI, but does not require a running Docker daemon.
 
+### CI failure diagnosis and recovery
+
+In [run 39046870693](https://github.com/typednotes/typednotes-infra/actions/runs/39046870693),
+both native assemblies passed Lite's smoke test but failed the Local
+exclusive-directory assertion. The Local runtime prints its refusal on stderr;
+non-TTY `docker logs` forwards that stream to the CLI's stderr. The smoke helper
+was only returning stdout, hiding the correct refusal and failing the test.
+It now captures both streams for log commands while keeping stderr separate
+for machine-readable commands such as `inspect`. Unexpected second-container
+failures include that container's output before cleanup. Regression coverage in
+`images/tests/test_smoke.py` exercises real subprocess streams without a Docker
+daemon.
+
+More recent jobs are refused before their first step with GitHub's annotation
+“The job was not started because recent account payments have failed or your
+spending limit needs to be increased.” An organization owner must resolve the
+payment issue or set an approved Actions budget in
+[Billing settings](https://github.com/organizations/typednotes/settings/billing).
+Workflow edits cannot bypass this account-level restriction.
+
+After billing is unblocked and the fix is available on `main`, start fresh
+workflows at that revision; rerunning a historical run uses its old code:
+
+```sh
+gh workflow run images.yml --repo typednotes/typednotes-infra --ref main
+```
+
+Wait for that publisher run to succeed before starting a Lite live plan: `latest` is not
+published until both architecture smoke suites pass, and the combined GHCR
+packages must be public for Infra/Scaleway's anonymous pulls. An unpublished or
+inaccessible image can cause the earlier live Plan's registry 403. Keep that
+failure visible rather than skipping registry validation to make CI green.
+
+Once publication and anonymous access are working:
+
+```sh
+gh workflow run plan.yml --repo typednotes/typednotes-infra --ref main
+```
+
 For a local image smoke run, generate its service fixture first:
 
 ```sh

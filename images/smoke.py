@@ -4,10 +4,15 @@ import time
 
 
 def docker(*args, data=None, timeout=60, check=True, env=None):
-    result = subprocess.run(["docker", *args], input=data, capture_output=True,
+    # Non-TTY `docker logs` preserves the container's stdout/stderr streams.
+    # Runtime refusals are printed on stderr and must reach smoke assertions
+    # and failure reports. Keep stderr separate for JSON/SQL CLI commands.
+    logs = args[:1] == ("logs",) or args[:2] == ("container", "logs")
+    result = subprocess.run(["docker", *args], input=data, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT if logs else subprocess.PIPE,
                             text=True, timeout=timeout, env=env, check=False)
     if check and result.returncode:
-        raise RuntimeError(f"docker {args[0]} failed: {result.stderr}")
+        raise RuntimeError(f"docker {args[0]} failed: {result.stderr or result.stdout}")
     return result.stdout.strip()
 
 
