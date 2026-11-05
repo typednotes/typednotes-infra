@@ -44,10 +44,12 @@ def main():
         conflict = name + "-conflict"
         try:
             docker("run", "--detach", "--name", conflict, "--volume", volume + ":/data", image)
-            if int(docker("wait", conflict, timeout=30)) == 0:
-                raise RuntimeError("A second Local instance must refuse the same data directory")
-            if "already using" not in docker("logs", conflict):
-                raise RuntimeError("Second instance failed without the expected exclusive-directory refusal")
+            code = int(docker("wait", conflict, timeout=30))
+            output = docker("logs", conflict, check=False)
+            if code == 0:
+                raise RuntimeError(f"A second Local instance must refuse the same data directory\n{output}")
+            if "already using" not in output:
+                raise RuntimeError(f"Second instance failed without the expected exclusive-directory refusal (exit {code})\n{output}")
         finally:
             docker("rm", "--force", conflict, check=False)
         docker("exec", name, "python3", "/usr/local/lib/typednotes/local/entrypoint.py", "--healthcheck")
