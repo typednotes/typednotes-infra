@@ -19,10 +19,10 @@ and `README.md`/`docs/` describe the fleet that is declared.
 | Task | Command |
 | --- | --- |
 | Install | toolchain from `lean-toolchain` (`leanprover/lean4:v4.34.1`) via `elan`; native deps: `sudo apt-get install -y libpq-dev postgresql libssl-dev libsecret-1-dev pkg-config ca-certificates` (as in `.github/workflows/plan.yml`); `infra`/`linen` are pinned to tags in `lakefile.lean` — move them deliberately (`lake update infra`) |
-| Type-check | `lake build` (compile only; no network, no credentials); Python: TODO(agents-md): no Python type-checker is configured |
+| Type-check | `lake build --wfail` (compile only; no network, no credentials; warnings fail it); Python: `mypy` from the repository root (`mypy --strict` via `mypy.ini`, over `images/`, `lite/`, `local/` and `scripts/*.py`) |
 | Test | `TYPEDNOTES_DEPLOYMENT=<lite|full|full-from-lite|lite-storage> lake exe typednotes-infra check`; `lake env lean --run scripts/check-topology.lean`; `LOCAL_POSTGRES_BIN="$(pg_config --bindir)" python3 -m unittest discover -s lite/tests -v`; `python3 -m unittest discover -s images/tests -v`; `LOCAL_POSTGRES_BIN="$(pg_config --bindir)" python3 -m unittest discover -s local/tests -v` (the offline steps of `plan.yml`) |
 | Lint / format | TODO(agents-md): no linter or formatter is configured (Lean or Python) |
-| Build / release | `lake build`; images: `.github/workflows/images.yml` (`scripts/build-images.sh`); deploying is `apply.yml`/`destroy.yml` (manual, typed confirmation) or `lake script run apply --yes` — confirm every time |
+| Build / release | `lake build --wfail`; images: `.github/workflows/images.yml` (`scripts/build-images.sh`); deploying is `apply.yml`/`destroy.yml` (manual, typed confirmation) or `lake script run apply --yes` — confirm every time |
 | CLI (applications) | `lake exe typednotes-infra` (bare invocation runs `check`; subcommands `check`, `plan`, `apply`, `destroy`, `dump` come from `infra`; no `--help` flag yet); shortcuts `lake script run check|plan|apply --yes` |
 
 Before declaring a change done, run type-check, tests and lint, and report their real output.
@@ -158,15 +158,12 @@ experiments are logged too.
 ### Types: use the strongest standard checking the language offers, maximally
 
 - Use the standard type-checker of the language/framework in its strictest practical mode, run it in
-  CI, and keep it at zero errors. Examples: Python `mypy --strict` or `pyright` strict, with
-  `py.typed`; TypeScript `"strict": true` plus `noUncheckedIndexedAccess` and
-  `exactOptionalPropertyTypes`; Rust `clippy -D warnings`; Go `go vet` + `staticcheck`; Haskell
-  `-Wall -Werror`; Kotlin/Swift/Scala with warnings as errors.
-  In this project: Lean 4 (`leanprover/lean4:v4.34.1`), checked by `lake build` in
-  `.github/workflows/plan.yml` and the other workflows; `lakefile.lean`
-  sets no `leanOptions` or `moreLeanArgs`, so Lean's defaults apply: `autoImplicit` is on and
-  warnings are not errors (no `--wfail` in CI). The Python under `images/`, `lite/`, `local/`
-  and `scripts/` is not type-checked.
+  CI, and keep it at zero errors.
+  In this project: Lean 4 (`leanprover/lean4:v4.34.1`) with `autoImplicit` and
+  `relaxedAutoImplicit` off for the package (`lakefile.lean`'s `leanOptions`), and
+  `lake build --wfail` in CI (`plan.yml`, `apply.yml`, `destroy.yml`, `images.yml`): warnings,
+  including `sorry`, fail the build. The Python under `images/`, `lite/`, `local/` and
+  `scripts/` is checked by `mypy --strict` (`mypy.ini`; mypy 2.4.1 in `plan.yml`).
 - Make illegal states unrepresentable: precise types, enums/sum types over strings and flags, new
   types for identifiers and units, immutable data by default. Avoid `Any`, casts and ignores; when
   one is unavoidable, scope it narrowly and justify it in a comment.

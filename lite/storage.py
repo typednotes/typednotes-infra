@@ -14,7 +14,7 @@ from images.database import environment
 TABLES = ("public.kv_store", "secrets.infra_migrations")
 
 
-def psql(url, sql):
+def psql(url: str, sql: str) -> str:
     result = subprocess.run(["psql", "-X", "-w", "-qAt", "-v", "ON_ERROR_STOP=1"],
                             input=sql, env=environment(url), capture_output=True, text=True, check=False)
     if result.returncode:
@@ -22,7 +22,7 @@ def psql(url, sql):
     return result.stdout.strip()
 
 
-def fingerprint(url, table):
+def fingerprint(url: str, table: str) -> bytes:
     # Stream rather than materialize vault contents; row order and COPY encoding
     # are deterministic, including empty tables. No encrypted rows are logged.
     process = subprocess.Popen(["psql", "-X", "-w", "-qAt", "-v", "ON_ERROR_STOP=1", "-c",
@@ -40,7 +40,7 @@ def fingerprint(url, table):
     return digest.digest()
 
 
-def split(source, destination):
+def split(source: str, destination: str) -> None:
     if psql(source, "SELECT current_database();") == psql(destination, "SELECT current_database();"):
         raise ValueError("Application and vault must use different logical database names")
     if psql(source, "SELECT to_regclass('public.kv_store') IS NOT NULL AND to_regclass('secrets.infra_migrations') IS NOT NULL;") != "t":

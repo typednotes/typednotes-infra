@@ -15,14 +15,14 @@ DIGEST = "ghcr.io/typednotes/typednotes-lite@sha256:" + "a" * 64
 
 
 class DeploymentConfigurationTests(unittest.TestCase):
-    def test_current_is_persisted_for_pushes_and_manual_operations(self):
+    def test_current_is_persisted_for_pushes_and_manual_operations(self) -> None:
         self.assertEqual(config.resolve(), ("lite", config.DEFAULT_IMAGE))
         self.assertEqual(config.resolve(configured="full"), ("full", config.DEFAULT_IMAGE))
         for operation in ("plan", "apply", "destroy"):
             self.assertEqual(config.resolve(configured="full-from-lite", configured_image=DIGEST, operation=operation),
                              ("full-from-lite", config.DEFAULT_IMAGE if operation == "destroy" else DIGEST))
 
-    def test_promotion_and_bundle_upgrade_must_first_be_persisted(self):
+    def test_promotion_and_bundle_upgrade_must_first_be_persisted(self) -> None:
         with self.assertRaisesRegex(ValueError, "before promotion"):
             config.resolve(requested="full-from-lite", image=DIGEST)
         with self.assertRaisesRegex(ValueError, "tested bundle digest"):
@@ -32,7 +32,7 @@ class DeploymentConfigurationTests(unittest.TestCase):
             config.resolve(configured="full-from-lite", configured_image=DIGEST, image=updated)
         self.assertEqual(config.resolve(configured="full-from-lite", configured_image=updated, image=updated)[1], updated)
 
-    def test_downgrade_is_refused_and_emergency_teardown_needs_no_image(self):
+    def test_downgrade_is_refused_and_emergency_teardown_needs_no_image(self) -> None:
         for operation in ("plan", "apply", "destroy"):
             with self.assertRaisesRegex(ValueError, "downgrade/teardown"):
                 config.resolve(requested="lite", configured="full-from-lite", configured_image=DIGEST, operation=operation)
@@ -40,7 +40,7 @@ class DeploymentConfigurationTests(unittest.TestCase):
         self.assertEqual(config.resolve(configured="full-from-lite", configured_image="invalid", operation="destroy")[0], "full-from-lite")
         self.assertEqual(config.resolve(requested="full", configured="full-from-lite")[0], "full")
 
-    def test_invalid_configuration_cannot_inject_workflow_outputs(self):
+    def test_invalid_configuration_cannot_inject_workflow_outputs(self) -> None:
         for arguments in ({"configured": "bad"}, {"requested": "lite-storage"}, {"image": DIGEST + "\ninjected=true"}):
             with self.assertRaises(ValueError):
                 config.resolve(**arguments)

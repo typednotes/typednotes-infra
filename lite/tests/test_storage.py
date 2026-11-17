@@ -14,7 +14,7 @@ from local.postgres import Postgres
 
 @unittest.skipUnless(os.environ.get("LOCAL_POSTGRES_BIN"), "Set LOCAL_POSTGRES_BIN to exercise a real legacy vault split")
 class VaultSplitTests(unittest.TestCase):
-    def setUp(self):
+    def setUp(self) -> None:
         self.work = tempfile.TemporaryDirectory()
         self.addCleanup(self.work.cleanup)
         with socket.socket() as listener:
@@ -38,7 +38,7 @@ class VaultSplitTests(unittest.TestCase):
              "CREATE SCHEMA secrets; CREATE TABLE secrets.infra_migrations(id text PRIMARY KEY, sql text, applied_at timestamptz DEFAULT now());"
              "INSERT INTO secrets.infra_migrations(id, sql) VALUES ('0001', 'CREATE TABLE kv_store(...);');")
 
-    def test_copy_preserves_ciphertext_history_and_original_rows(self):
+    def test_copy_preserves_ciphertext_history_and_original_rows(self) -> None:
         expected = [fingerprint(self.source, table) for table in ("public.kv_store", "secrets.infra_migrations")]
         split(self.source, self.destination)
         self.assertEqual([fingerprint(self.destination, table) for table in ("public.kv_store", "secrets.infra_migrations")], expected)
@@ -47,7 +47,7 @@ class VaultSplitTests(unittest.TestCase):
         self.assertEqual(psql(self.source, "SELECT encode(value, 'hex') FROM lite_retired_kv_store;"), "001122ff")
         self.assertEqual(psql(self.source, "SELECT id FROM lite_retired_secrets.infra_migrations;"), "0001")
 
-    def test_unrelated_destination_and_same_database_are_never_overwritten(self):
+    def test_unrelated_destination_and_same_database_are_never_overwritten(self) -> None:
         with self.assertRaisesRegex(ValueError, "different logical"):
             split(self.source, self.source)
         psql(self.destination, "CREATE TABLE unrelated(value text); INSERT INTO unrelated VALUES ('keep');")
@@ -56,7 +56,7 @@ class VaultSplitTests(unittest.TestCase):
         self.assertEqual(psql(self.destination, "SELECT value FROM unrelated;"), "keep")
         self.assertEqual(psql(self.source, "SELECT count(*) FROM kv_store;"), "1")
 
-    def test_verified_copy_can_resume_after_interruption_but_drift_cannot(self):
+    def test_verified_copy_can_resume_after_interruption_but_drift_cannot(self) -> None:
         # Simulate an interruption after restore but before source retirement.
         from lite import storage
         real_fingerprint = storage.fingerprint
@@ -72,14 +72,15 @@ class VaultSplitTests(unittest.TestCase):
         self.assertEqual(psql(self.source, "SELECT to_regclass('public.kv_store') IS NULL;"), "t")
 
     @unittest.skipUnless(os.environ.get("LOCAL_RELEASE_BUNDLE"), "Set LOCAL_RELEASE_BUNDLE to check resolved service SQL on split storage")
-    def test_resolved_service_sql_applies_to_split_databases(self):
+    def test_resolved_service_sql_applies_to_split_databases(self) -> None:
         from images import migrations
         root = Path(os.environ["LOCAL_RELEASE_BUNDLE"])
         manifest = json.loads((root / "manifest.json").read_text())
         self.pg.psql("CREATE DATABASE release_app;")
         self.pg.psql("CREATE DATABASE release_vault;")
         for database, schemas in (("release_app", ("core", "ledger", "liaison")), ("release_vault", ("secrets",))):
-            sql = lambda text, database=database: self.pg.psql(text, database=database)
+            def sql(text: str, database: str = database) -> str:
+                return self.pg.psql(text, database=database)
             migrations.apply(sql, manifest, root, schemas=schemas)
             migrations.apply(sql, manifest, root, schemas=schemas)
             self.assertEqual(sql("SELECT to_regclass('public.kv_store') IS NOT NULL;"), "t\n" if database == "release_vault" else "f\n")

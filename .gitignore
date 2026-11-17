@@ -9,3 +9,4 @@ local.env
 reviews/
 output/
 .cache/
+.mypy_cache/

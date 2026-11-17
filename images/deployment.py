@@ -7,6 +7,8 @@ import hashlib
 import json
 import re
 import sys
+from collections.abc import Callable
+from typing import Any
 from urllib.request import Request, urlopen
 
 from images.releases import MANIFEST_LABEL, validate
@@ -16,7 +18,7 @@ ACCEPT = ("application/vnd.oci.image.index.v1+json, application/vnd.oci.image.ma
           "application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json")
 
 
-def read_manifest(image, get=None):
+def read_manifest(image: str, get: Callable[[str], bytes] | None = None) -> tuple[str, dict[str, Any]]:
     match = re.fullmatch(r"ghcr\.io/typednotes/typednotes-lite(?::([-\w.]+)|@(sha256:[0-9a-f]{64}))", image)
     if not match:
         raise ValueError("Expected a tag or sha256 digest of ghcr.io/typednotes/typednotes-lite")
@@ -25,15 +27,17 @@ def read_manifest(image, get=None):
         with urlopen(f"https://ghcr.io/token?service=ghcr.io&scope=repository:{REPOSITORY}:pull", timeout=30) as response:
             token = json.load(response)["token"]
 
-        def registry_get(path):
+        def registry_get(path: str) -> bytes:
             request = Request(f"https://ghcr.io/v2/{REPOSITORY}/{path}",
                               headers={"Authorization": "Bearer " + token, "Accept": ACCEPT})
             with urlopen(request, timeout=60) as response:
-                return response.read(2 * 1024 * 1024)
+                data: bytes = response.read(2 * 1024 * 1024)
+                return data
         get = registry_get
+    fetch_registry = get
 
-    def content(path, expected=None):
-        data = get(path)
+    def content(path: str, expected: str | None = None) -> tuple[Any, str]:
+        data = fetch_registry(path)
         digest = "sha256:" + hashlib.sha256(data).hexdigest()
         if expected and digest != expected:
             raise ValueError("Registry content does not match its immutable digest")
@@ -56,16 +60,18 @@ def read_manifest(image, get=None):
     return "ghcr.io/" + REPOSITORY + "@" + digest, validate(json.loads(label))
 
 
-def deployment(image, read=read_manifest, fetch=None):
+def deployment(image: str, read: Callable[[str], tuple[str, dict[str, Any]]] = read_manifest,
+               fetch: Callable[[str], bytes] | None = None) -> dict[str, Any]:
     image, manifest = read(image)
     if fetch is None:
-        def fetch_sql(url):
+        def fetch_sql(url: str) -> bytes:
             with urlopen(url, timeout=30) as response:
-                return response.read(8 * 1024 * 1024)
+                data: bytes = response.read(8 * 1024 * 1024)
+                return data
         fetch = fetch_sql
-    histories = []
+    histories: list[dict[str, Any]] = []
     for history in manifest["histories"]:
-        migrations = []
+        migrations: list[dict[str, str]] = []
         for migration in history["migrations"]:
             data = fetch(migration["url"])
             if hashlib.sha256(data).hexdigest() != migration["sha256"]:

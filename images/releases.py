@@ -11,10 +11,14 @@ import os
 import re
 import subprocess
 import tarfile
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 from urllib.request import Request, urlopen
 
-SERVICES = {
+# Service -> (GitHub repository, migration schema, migration directory); the
+# schema and directory are both set (a service with SQL) or both None.
+SERVICES: dict[str, tuple[str, str | None, str | None]] = {
     "app": ("typednotes/typednotes", "core", "migrations"),
     "ledger": ("typednotes/ledger", "ledger", "sql"),
     "liaison": ("typednotes/liaison", "liaison", "sql"),
@@ -28,13 +32,13 @@ SQL_FILE = re.compile(r"(\d+)_[-a-zA-Z0-9_]+\.sql\Z")
 MANIFEST_LABEL = "io.typednotes.build-manifest"
 
 
-def canonical(value):
+def canonical(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
-def latest_tag(listing):
+def latest_tag(listing: str) -> tuple[str, str]:
     """Numeric semver order, ignoring aliases/prereleases and peeling tags."""
-    refs = {}
+    refs: dict[str, str] = {}
     for line in listing.splitlines():
         sha, ref = line.split()
         if COMMIT.fullmatch(sha) and ref.startswith("refs/tags/"):
@@ -46,22 +50,23 @@ def latest_tag(listing):
     return tag, refs.get(tag + "^{}", refs[tag])
 
 
-def tag_listing(repository, fetch_page=None):
+def tag_listing(repository: str, fetch_page: Callable[[int], object] | None = None) -> str:
     """GitHub's tags API supplies peeled commits for annotated tags too.
 
     Use public HTTPS, independent of workstation Git URL rewrites/SSH agents.
     CI supplies its read-only GH_TOKEN for a higher API rate limit.
     """
     if fetch_page is None:
-        def read_page(page):
+        def read_page(page: int) -> object:
             headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
             if os.environ.get("GH_TOKEN"):
                 headers["Authorization"] = "Bearer " + os.environ["GH_TOKEN"]
             request = Request(f"https://api.github.com/repos/{repository}/tags?per_page=100&page={page}", headers=headers)
             with urlopen(request, timeout=60) as response:
-                return json.load(response)
+                page_tags: object = json.load(response)
+                return page_tags
         fetch_page = read_page
-    refs = []
+    refs: list[str] = []
     page = 1
     while True:
         tags = fetch_page(page)
@@ -74,12 +79,12 @@ def tag_listing(repository, fetch_page=None):
         page += 1
 
 
-def archive(repository, commit):
+def archive(repository: str, commit: str) -> dict[str, bytes]:
     with urlopen(f"https://codeload.github.com/{repository}/tar.gz/{commit}", timeout=120) as response:
-        data = response.read(128 * 1024 * 1024 + 1)
+        data: bytes = response.read(128 * 1024 * 1024 + 1)
     if len(data) > 128 * 1024 * 1024:
         raise ValueError(f"Source archive too large: {repository}")
-    files = {}
+    files: dict[str, bytes] = {}
     # Read selected regular members only: never extract paths or symlinks.
     with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as source:
         for member in source:
@@ -94,7 +99,7 @@ def archive(repository, commit):
     return files
 
 
-def validate(manifest):
+def validate(manifest: dict[str, Any]) -> dict[str, Any]:
     if manifest.get("version") != 1 or set(manifest.get("sources", {})) != set(SERVICES):
         raise ValueError("Expected a version-1 manifest with all six services")
     for name, (repository, _, _) in SERVICES.items():
@@ -109,8 +114,10 @@ def validate(manifest):
         if name not in SERVICES or SERVICES[name][1] != history["schema"]:
             raise ValueError("Migration history does not match its service")
         repo, _, directory = SERVICES[name]
+        if directory is None:
+            raise ValueError("Migration history names a service without SQL")
         commit = manifest["sources"][name]["commit"]
-        ids = []
+        ids: list[str] = []
         for migration in history["migrations"]:
             match = SQL_FILE.fullmatch(migration["path"].removeprefix(directory + "/"))
             if not match or not migration["path"].startswith(directory + "/"):
@@ -130,8 +137,8 @@ def validate(manifest):
     return manifest
 
 
-def resolve_refs(revision, listing=None):
-    sources = {}
+def resolve_refs(revision: str, listing: Callable[[str], str] | None = None) -> dict[str, Any]:
+    sources: dict[str, dict[str, str]] = {}
     for name, (repository, _, _) in SERVICES.items():
         if listing is None:
             text = tag_listing(repository)
@@ -139,17 +146,19 @@ def resolve_refs(revision, listing=None):
             text = listing(repository)
         tag, commit = latest_tag(text)
         sources[name] = {"repository": repository, "tag": tag, "commit": commit}
-    refs = {"revision": revision, "sources": sources}
+    refs: dict[str, Any] = {"revision": revision, "sources": sources}
     refs["key"] = hashlib.sha256(canonical(refs).encode()).hexdigest()
     return refs
 
 
-def resolve(output, revision, listing=None, download=archive, refs=None):
+def resolve(output: str | Path, revision: str, listing: Callable[[str], str] | None = None,
+            download: Callable[[str, str], dict[str, bytes]] = archive,
+            refs: dict[str, Any] | None = None) -> dict[str, Any]:
     output = Path(output)
     refs = refs or resolve_refs(revision, listing)
     if refs["revision"] != revision or set(refs["sources"]) != set(SERVICES):
         raise ValueError("Release snapshot does not match this packaging revision")
-    manifest = {"version": 1, "runtimeVersion": 2, "bundleRevision": revision, "sources": {}, "histories": []}
+    manifest: dict[str, Any] = {"version": 1, "runtimeVersion": 2, "bundleRevision": revision, "sources": {}, "histories": []}
     for name, (repository, schema, directory) in SERVICES.items():
         source = dict(refs["sources"][name])
         tag, commit = source["tag"], source["commit"]
@@ -157,8 +166,8 @@ def resolve(output, revision, listing=None, download=archive, refs=None):
             raise ValueError("Invalid resolved source")
         manifest["sources"][name] = source
         files = download(repository, commit)
-        if schema:
-            migrations = []
+        if schema is not None and directory is not None:
+            migrations: list[dict[str, str]] = []
             for path, sql in sorted(files.items()):
                 match = SQL_FILE.fullmatch(path.removeprefix(directory + "/"))
                 if not path.startswith(directory + "/") or not match:
@@ -199,7 +208,7 @@ def resolve(output, revision, listing=None, download=archive, refs=None):
     return manifest
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", default=".images")
     parser.add_argument("--revision")

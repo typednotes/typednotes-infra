@@ -1,9 +1,12 @@
 """Shared container smoke helpers; never contact deployed cloud services."""
 import subprocess
 import time
+from collections.abc import Callable, Mapping
+from typing import Any
 
 
-def docker(*args, data=None, timeout=60, check=True, env=None):
+def docker(*args: str, data: str | None = None, timeout: float = 60, check: bool = True,
+           env: Mapping[str, str] | None = None) -> str:
     # Non-TTY `docker logs` preserves the container's stdout/stderr streams.
     # Runtime refusals are printed on stderr and must reach smoke assertions
     # and failure reports. Keep stderr separate for JSON/SQL CLI commands.
@@ -16,7 +19,7 @@ def docker(*args, data=None, timeout=60, check=True, env=None):
     return result.stdout.strip()
 
 
-def wait_for(check, description, timeout=180):
+def wait_for(check: Callable[[], object], description: str, timeout: float = 180) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if check():
@@ -25,11 +28,12 @@ def wait_for(check, description, timeout=180):
     raise RuntimeError(f"Timed out waiting for {description}")
 
 
-def service_environment(declared, values):
+def service_environment(declared: dict[str, Any], values: Mapping[str, str]) -> dict[str, str]:
     """Bind fixture values using the fleet's actual secret-input mapping.
     Optional integrations stay absent; runtime contracts reject missing core values.
     """
-    return declared["env"] | {key: values[origin] for key, origin in declared["secretInputs"].items() if origin in values}
+    environment: dict[str, str] = declared["env"]
+    return environment | {key: values[origin] for key, origin in declared["secretInputs"].items() if origin in values}
 
 
 WORKER_CHECK = '''

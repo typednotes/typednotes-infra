@@ -9,8 +9,10 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import FrameType
 from urllib.error import URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
@@ -44,7 +46,7 @@ class ServiceDefinition:
 
 # One service contract for combined and standalone supervision. Only topology
 # supplies different addresses and the mapping from bundle credentials.
-DEFINITIONS = {
+DEFINITIONS: dict[str, ServiceDefinition] = {
     "vault": ServiceDefinition("/usr/local/bin/secrets-server", 8200, "/v1/sys/health",
         ("SECRETS_SERVER_STORAGE_DATABASE_URL", "SECRETS_MASTER_KEY", "SECRETS_SERVER_BOOTSTRAP_PASSWORD",
          "SECRETS_SERVER_SERVICE_IDENTITIES", "APP_SECRETS_PASSWORD", "LIAISON_SECRETS_PASSWORD", "LUN_SECRETS_PASSWORD"),
@@ -69,13 +71,13 @@ DEFINITIONS = {
 }
 
 
-def loopback_configuration(name, source):
+def loopback_configuration(name: str, source: Mapping[str, str]) -> dict[str, str]:
     config = dict(source)
     for target, origin in DEFINITIONS[name].credentials:
         if not source.get(origin):
             raise ValueError("Missing configuration: " + origin)
         config[target] = source[origin]
-    def url(service):
+    def url(service: str) -> str:
         return f"http://127.0.0.1:{DEFINITIONS[service].port}"
     if name in ("liaison", "lun"):
         config.update(SECRETS_HOST="127.0.0.1", SECRETS_PORT="8200", SECRETS_INSECURE="1", SECRETS_USERNAME=name)
@@ -89,7 +91,8 @@ def loopback_configuration(name, source):
     return config
 
 
-def services(source, *, state_root=None, allow_compute=False, standalone=None):
+def services(source: Mapping[str, str], *, state_root: str | Path | None = None, allow_compute: bool = False,
+             standalone: str | None = None) -> list[Service]:
     """Construct only selected services, with explicit topology and allowlists.
     Worker preparation stays stdlib-only, including under a scrubbed environment.
     """
@@ -101,10 +104,11 @@ def services(source, *, state_root=None, allow_compute=False, standalone=None):
     internal_ports = {definition.port for name, definition in DEFINITIONS.items() if name != "app"}
     if not 1 <= public_port <= 65535 or (standalone is None and public_port in internal_ports):
         raise ValueError("PORT must be valid and distinct from Lite's internal ports")
-    result = []
-    for name in ([standalone] if standalone else DEFINITIONS):
+    result: list[Service] = []
+    selected: list[str] = [standalone] if standalone else list(DEFINITIONS)
+    for name in selected:
         definition = DEFINITIONS[name]
-        config = source if standalone else loopback_configuration(name, source)
+        config: Mapping[str, str] = source if standalone else loopback_configuration(name, source)
         missing = [key for key in definition.required if not config.get(key)]
         if missing:
             raise ValueError("Missing configuration: " + ", ".join(missing))
@@ -137,17 +141,18 @@ def services(source, *, state_root=None, allow_compute=False, standalone=None):
     return result
 
 
-def healthy(service):
+def healthy(service: Service) -> bool:
     headers = {"Authorization": f"Bearer {service.token}"} if service.token else {}
     try:
         # Loopback checks must not follow deployment HTTP proxy settings.
         with build_opener(ProxyHandler({})).open(Request(service.health, headers=headers), timeout=2) as reply:
-            return reply.status == 200
+            status: int = reply.status
+            return status == 200
     except (OSError, URLError):
         return False
 
 
-def check_storage(source):
+def check_storage(source: Mapping[str, str]) -> None:
     """A legacy vault must be copied before any new vault can bootstrap.
     Local uses its own bootstrap and deliberately retains one logical DB.
     """
@@ -166,7 +171,7 @@ def check_storage(source):
         raise ValueError("Legacy vault still exists in the application database; follow docs/lite.md's vault-split procedure")
 
 
-def prepare_home(service):
+def prepare_home(service: Service) -> pwd.struct_passwd:
     identity = pwd.getpwnam(service.name)
     home = Path(service.env["HOME"])
     home.parent.mkdir(mode=0o711, parents=True, exist_ok=True)
@@ -176,7 +181,7 @@ def prepare_home(service):
     return identity
 
 
-def prepare_worker(name):
+def prepare_worker(name: str) -> None:
     # Run AFTER dropping privileges. Persistent worker files must never direct
     # privileged filesystem writes through user-created symlinks on restart.
     tools = Path(os.environ["ELAN_HOME"]) / "toolchains"
@@ -195,23 +200,23 @@ def prepare_worker(name):
 
 
 class Supervisor:
-    def __init__(self, definitions, startup_timeout=180, shutdown_timeout=10):
+    def __init__(self, definitions: list[Service], startup_timeout: float = 180, shutdown_timeout: float = 10) -> None:
         self.definitions = definitions
         self.startup_timeout = startup_timeout
         self.shutdown_timeout = shutdown_timeout
-        self.children = []
+        self.children: list[tuple[Service, subprocess.Popen[bytes]]] = []
         self.stopping = threading.Event()
 
-    def stop(self, *_):
+    def stop(self, _signal: int | None = None, _frame: FrameType | None = None) -> None:
         self.stopping.set()
 
-    def check_children(self):
+    def check_children(self) -> None:
         for service, child in self.children:
             code = child.poll()
             if code is not None:
                 raise RuntimeError(f"{service.name} exited ({code})")
 
-    def start(self, service):
+    def start(self, service: Service) -> None:
         identity = prepare_home(service)
         if service.name in ("lode", "lun"):
             subprocess.run([sys.executable, __file__, "--prepare-worker", service.name],
@@ -223,7 +228,7 @@ class Supervisor:
         self.children.append((service, child))
         print(f"lite: started {service.name}", flush=True)
 
-    def shutdown(self):
+    def shutdown(self) -> None:
         # Signal whole groups, including compiler and generated-code children.
         for _, child in reversed(self.children):
             try:
@@ -243,7 +248,7 @@ class Supervisor:
                 pass
             child.wait()
 
-    def run(self):
+    def run(self) -> int:
         try:
             for service in self.definitions:
                 if self.stopping.is_set():
@@ -268,7 +273,7 @@ class Supervisor:
             self.shutdown()
 
 
-def main():
+def main() -> int:
     try:
         if len(sys.argv) == 3 and sys.argv[1] == "--prepare-worker" and sys.argv[2] in ("lode", "lun"):
             prepare_worker(sys.argv[2])

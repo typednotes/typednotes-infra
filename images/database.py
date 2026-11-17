@@ -3,7 +3,7 @@ import os
 from urllib.parse import parse_qsl, unquote, urlsplit
 
 
-def environment(url):
+def environment(url: str) -> dict[str, str]:
     parsed = urlsplit(url)
     if parsed.scheme not in ("postgres", "postgresql") or not parsed.path.startswith("/"):
         raise ValueError("Expected a PostgreSQL connection URI")

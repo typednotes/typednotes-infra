@@ -152,6 +152,9 @@ run_cmd do
 package «typednotes-infra» where
   version := v!"0.10.1"
   moreLinkArgs := nativeLinkArgs
+  -- Strict elaboration: every variable is bound explicitly. CI also builds
+  -- with `--wfail`, so a warning (including `sorry`) fails the build.
+  leanOptions := #[⟨`autoImplicit, false⟩, ⟨`relaxedAutoImplicit, false⟩]
 
 -- A tag rather than `main`. `Main.lean` hands the whole declaration to
 -- `Infra.Cli.run` in one value, which does not compile against an `infra`

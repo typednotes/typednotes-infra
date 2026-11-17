@@ -9,7 +9,7 @@ from images.smoke import docker
 
 
 class DockerOutputTests(unittest.TestCase):
-    def setUp(self):
+    def setUp(self) -> None:
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         executable = Path(self.directory.name) / "docker"
@@ -34,18 +34,18 @@ else:
         executable.chmod(0o755)
         self.environment = os.environ | {"PATH": self.directory.name + ":" + os.environ["PATH"]}
 
-    def test_container_stderr_reaches_the_exclusive_directory_assertion(self):
+    def test_container_stderr_reaches_the_exclusive_directory_assertion(self) -> None:
         for command in (("logs",), ("container", "logs")):
             with self.subTest(command=command):
                 output = docker(*command, "conflict", env=self.environment)
                 self.assertEqual(output, "service started\nlocal: Another Local instance is already using this directory")
                 self.assertIn("already using", output)
 
-    def test_machine_readable_commands_keep_stderr_separate(self):
+    def test_machine_readable_commands_keep_stderr_separate(self) -> None:
         output = docker("inspect", "fixture", env=self.environment)
         self.assertEqual(json.loads(output), {"State": {"Running": True}})
 
-    def test_failed_commands_retain_their_diagnostics(self):
+    def test_failed_commands_retain_their_diagnostics(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "No such container"):
             docker("logs", "missing", env=self.environment)
         self.assertIn("No such container", docker("logs", "missing", env=self.environment, check=False))

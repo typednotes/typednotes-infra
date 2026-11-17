@@ -26,17 +26,17 @@ from images.smoke import (
 from lite.runtime import DEFINITIONS
 
 
-def main():
+def main() -> None:
     image = sys.argv[1]
     config = json.loads(Path(sys.argv[2]).read_text())
     validate(config)
     service_config = json.loads(Path(sys.argv[3] if len(sys.argv) > 3 else ".images/service-config.json").read_text())
     prefix = "typednotes-lite-smoke-" + secrets.token_hex(4)
     database, app = prefix + "-db", prefix + "-app"
-    promoted = []
+    promoted: list[str] = []
     compute_expected = False
     password = secrets.token_hex(24)
-    fixture = {
+    fixture: dict[str, str] = {
         "DATABASE_URL": f"postgres://runtime:{password}@database:5432/postgres",
         "SECRETS_SERVER_STORAGE_DATABASE_URL": f"postgres://vault_runtime:{password}@database:5432/vault",
         "SECRETS_MASTER_KEY": secrets.token_hex(32),
@@ -60,7 +60,7 @@ def main():
         wait_for(lambda: "accepting connections" in docker("exec", database, "pg_isready", "-U", "postgres", check=False),
                  "disposable PostgreSQL")
 
-        def sql(text, logical="postgres"):
+        def sql(text: str, logical: str = "postgres") -> str:
             return docker("exec", "-i", database, "psql", "-X", "-q", "-At", "-v", "ON_ERROR_STOP=1", "-U", "postgres",
                           "-d", logical, data=text)
 
@@ -89,14 +89,14 @@ def main():
         published = docker("port", app, "8080/tcp")
         address = "http://" + published
 
-        def ready():
+        def ready() -> bool:
             state = json.loads(docker("inspect", app))[0]["State"]
             if not state["Running"]:
                 raise RuntimeError("Lite exited during startup")
             try:
                 with urlopen(address + "/api/health", timeout=5) as response:
                     health = json.load(response)
-                    return (all(health.get(key) is True for key in
+                    return bool(all(health.get(key) is True for key in
                                 ("database", "schema", "ledger", "vault", "liaison", "computations", "lode", "lun"))
                             and health.get("compute") is compute_expected)
             except (OSError, URLError):
@@ -156,8 +156,10 @@ else:
             for key in source:
                 args += ["--env", key]
             docker(*args, image, env=os.environ | source)
-            wait_for(lambda name=name: json.loads(docker("inspect", name))[0]["State"].get("Health", {}).get("Status") == "healthy",
-                     "standalone " + service)
+            def standalone_healthy(name: str = name) -> bool:
+                state = json.loads(docker("inspect", name))[0]["State"]
+                return bool(state.get("Health", {}).get("Status") == "healthy")
+            wait_for(standalone_healthy, "standalone " + service)
         address = "http://" + docker("port", app, "8080/tcp")
         compute_expected = True
         wait_for(ready, "promoted app and compute database")

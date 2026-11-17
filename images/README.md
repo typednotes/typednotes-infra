@@ -175,6 +175,7 @@ access. Both paths compare applied history rather than replaying changed SQL.
 ## Verification
 
 ```sh
+mypy   # strict static typing of images/, lite/, local/ and scripts/ (mypy.ini)
 python3 -m unittest discover -s images/tests -v
 python3 -m unittest discover -s local/tests -v
 python3 -m unittest discover -s lite/tests -v

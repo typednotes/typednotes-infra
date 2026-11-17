@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -20,20 +21,21 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRATCH = os.environ.get("NOTEBOOK_TEST_TMPDIR", tempfile.gettempdir())
 
 
-def port():
+def port() -> int:
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
-        return listener.getsockname()[1]
+        number: int = listener.getsockname()[1]
+        return number
 
 
-def run(*args, **kwargs):
+def run(*args: str, cwd: Path | None = None) -> bytes:
     try:
-        return subprocess.check_output(args, stderr=subprocess.STDOUT, **kwargs)
+        return subprocess.check_output(args, stderr=subprocess.STDOUT, cwd=cwd)
     except subprocess.CalledProcessError as error:
         raise RuntimeError(f"{args[0]} failed: {error.output.decode(errors='replace')}") from error
 
 
-def main():
+def main() -> None:
     binary = Path(sys.argv[1]).resolve()
     assert binary.is_file(), "Pass the compiled secrets-server executable"
     identities = run("lake", "env", "lean", "--run", "scripts/notebook-vault-config.lean", cwd=ROOT).decode()
@@ -44,7 +46,7 @@ def main():
         run("initdb", "-D", str(pg), "-U", "fixture", "--auth=trust", "--no-locale", "--encoding=UTF8")
         run("pg_ctl", "-D", str(pg), "-l", str(work / "postgres.log"), "-o",
             f"-h 127.0.0.1 -p {pg_port} -c unix_socket_directories=''", "-w", "start")
-        server = None
+        server: subprocess.Popen[bytes] | None = None
         try:
             url = f"postgres://fixture@127.0.0.1:{pg_port}/postgres"
             passwords = {user: secrets.token_hex(32) for user in ("admin", "typednotes-app", "liaison", "lun")}
@@ -62,14 +64,16 @@ def main():
                 server = subprocess.Popen([str(binary)], cwd=work, env=env, stdout=log, stderr=log)
                 base = f"http://127.0.0.1:{http_port}"
 
-                def request(method, path, body=None, token=None):
+                def request(method: str, path: str, body: object = None,
+                            token: str | None = None) -> tuple[int, Any]:
                     headers = {"Content-Type": "application/json"}
                     if token:
                         headers["Authorization"] = f"Bearer {token}"
                     try:
                         with urlopen(Request(base + path, method=method, headers=headers,
                                              data=None if body is None else json.dumps(body).encode()), timeout=5) as response:
-                            return response.status, json.loads(response.read() or b"{}")
+                            status: int = response.status
+                            return status, json.loads(response.read() or b"{}")
                     except HTTPError as error:
                         return error.code, {}
 
@@ -93,7 +97,7 @@ def main():
 
                 checks = 0
 
-                def expect(user, method, path, allowed, body=None):
+                def expect(user: str, method: str, path: str, allowed: bool, body: object = None) -> None:
                     nonlocal checks
                     code, _ = request(method, "/v1/" + path, body, tokens[user])
                     assert (200 <= code < 300) if allowed else code == 403, (user, method, path, code)

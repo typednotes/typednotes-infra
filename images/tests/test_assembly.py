@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 from images.assembly import contexts, variants
 from images.releases import SERVICES
@@ -19,7 +20,7 @@ CHECK = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CHECK)
 
 
-def receipts(manifest, platform="linux/amd64"):
+def receipts(manifest: dict[str, Any], platform: str = "linux/amd64") -> list[dict[str, str]]:
     return [{"service": service, "build_id": manifest["build_id"], "build_run": "123-1",
              "commit": manifest["sources"][service]["commit"], "platform": platform,
              "image": "ghcr.io/typednotes/typednotes-lite@sha256:" + f"{index:064x}"}
@@ -27,17 +28,17 @@ def receipts(manifest, platform="linux/amd64"):
 
 
 class ReceiptTests(unittest.TestCase):
-    def setUp(self):
+    def setUp(self) -> None:
         self.work = tempfile.TemporaryDirectory()
         self.addCleanup(self.work.cleanup)
         self.manifest = fixture_bundle(self.work.name)
 
-    def test_six_immutable_inputs_preserve_sources_platform_and_run(self):
+    def test_six_immutable_inputs_preserve_sources_platform_and_run(self) -> None:
         inputs = contexts(self.manifest, receipts(self.manifest), "linux/amd64", "123-1")
         self.assertEqual(set(inputs), set(SERVICES))
         self.assertTrue(all(value.startswith("docker-image://ghcr.io/typednotes/typednotes-lite@sha256:") for value in inputs.values()))
 
-    def test_missing_duplicate_mutable_and_cross_run_artifacts_are_refused(self):
+    def test_missing_duplicate_mutable_and_cross_run_artifacts_are_refused(self) -> None:
         original = receipts(self.manifest)
         invalid = [original[:-1], original + [original[0]]]
         for field, value in (("commit", "b" * 40), ("build_id", "different"), ("build_run", "123-2"), ("build_run", "456-1"),
@@ -50,14 +51,14 @@ class ReceiptTests(unittest.TestCase):
             with self.subTest(receipts=changed), self.assertRaises(ValueError):
                 contexts(self.manifest, changed, "linux/amd64", "123-1")
 
-    def test_retry_reuses_only_successful_outputs_of_the_same_run_and_snapshot(self):
+    def test_retry_reuses_only_successful_outputs_of_the_same_run_and_snapshot(self) -> None:
         inputs = receipts(self.manifest)
         inputs[0]["build_run"] = "123-2"
         self.assertEqual(len(contexts(self.manifest, inputs, "linux/amd64", "123-2")), 6)
         with self.assertRaises(ValueError):
             contexts(self.manifest, inputs, "linux/amd64", "456-2")
 
-    def test_promotion_requires_both_tested_variants_and_architectures_by_digest(self):
+    def test_promotion_requires_both_tested_variants_and_architectures_by_digest(self) -> None:
         outputs = [{"build_id": self.manifest["build_id"], "build_run": "123-1", "platform": platform,
                     "images": {variant: f"ghcr.io/typednotes/typednotes-{variant}@sha256:{index:064x}"
                                for variant in ("lite", "local")}}
@@ -82,12 +83,12 @@ class ReceiptTests(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("docker"), "Docker Buildx CLI is required to inspect Bake graphs (no daemon needed)")
 class BakeGraphTests(unittest.TestCase):
-    def test_each_source_job_builds_only_one_service_and_assembly_builds_none(self):
+    def test_each_source_job_builds_only_one_service_and_assembly_builds_none(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             manifest = fixture_bundle(directory)
             override = Path(directory) / "bake.json"
             for platform in ("linux/amd64", "linux/arm64"):
-                def bake(*files, target=None, requested_platform=platform):
+                def bake(*files: Path, target: str | None = None, requested_platform: str = platform) -> Any:
                     args = ["docker", "buildx", "bake", "-f", "lite/docker-bake.hcl", "-f", str(override)]
                     for file in files:
                         args += ["-f", str(file)]
@@ -120,7 +121,7 @@ class BakeGraphTests(unittest.TestCase):
 
 
 class RunnerCleanupTests(unittest.TestCase):
-    def test_cleanup_refuses_local_and_self_hosted_machines(self):
+    def test_cleanup_refuses_local_and_self_hosted_machines(self) -> None:
         for environment in ("", "self-hosted"):
             result = subprocess.run(["bash", str(ROOT / "scripts/prepare-image-runner.sh")],
                                     env=os.environ | {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": environment, "RUNNER_OS": "Linux"},
@@ -128,7 +129,7 @@ class RunnerCleanupTests(unittest.TestCase):
             self.assertEqual(result.returncode, 2)
             self.assertIn("GitHub-hosted", result.stderr)
 
-    def test_hosted_dry_run_does_not_invoke_sudo(self):
+    def test_hosted_dry_run_does_not_invoke_sudo(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             forbidden = Path(directory) / "sudo"
             forbidden.write_text("#!/bin/sh\nexit 99\n")

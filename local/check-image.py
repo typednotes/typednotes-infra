@@ -12,31 +12,31 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from images.smoke import VAULT_CHECK, WORKER_CHECK, docker, wait_for
 
 
-def main():
+def main() -> None:
     image = sys.argv[1]
     name = "typednotes-local-smoke-" + secrets.token_hex(4)
     volume = name + "-data"
     try:
         docker("volume", "create", volume)
 
-        def start():
+        def start() -> str:
             docker("run", "--detach", "--name", name, "--publish", "127.0.0.1::8080", "--volume", volume + ":/data", image)
             return "http://" + docker("port", name, "8080/tcp")
 
         address = start()
 
-        def ready():
+        def ready() -> bool:
             if not json.loads(docker("inspect", name))[0]["State"]["Running"]:
                 raise RuntimeError("Local image exited during startup")
             try:
                 with urlopen(address + "/api/health", timeout=5) as response:
                     health = json.load(response)
-                    return all(health.get(key) is True for key in
-                               ("database", "schema", "ledger", "vault", "liaison", "computations", "lode", "lun", "compute"))
+                    return bool(all(health.get(key) is True for key in
+                               ("database", "schema", "ledger", "vault", "liaison", "computations", "lode", "lun", "compute")))
             except (OSError, URLError):
                 return False
 
-        def sql(text):
+        def sql(text: str) -> str:
             return docker("exec", "--user", "postgres", "-i", name, "/usr/lib/postgresql/17/bin/psql", "-X", "-q", "-At",
                           "-h", "/data/run", "-U", "postgres", "-d", "typednotes", "-v", "ON_ERROR_STOP=1", data=text)
 

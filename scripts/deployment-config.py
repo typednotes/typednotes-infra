@@ -8,7 +8,8 @@ DIGEST = re.compile(r"ghcr\.io/typednotes/typednotes-lite@sha256:[0-9a-f]{64}\Z"
 IMAGE = re.compile(r"ghcr\.io/typednotes/typednotes-lite(?::[-\w.]+|@sha256:[0-9a-f]{64})\Z")
 
 
-def resolve(requested="current", configured="", image="", configured_image="", operation="plan"):
+def resolve(requested: str = "current", configured: str = "", image: str = "", configured_image: str = "",
+            operation: str = "plan") -> tuple[str, str]:
     if operation not in ("plan", "apply", "destroy"):
         raise ValueError("Invalid deployment operation")
     current = configured or "lite"

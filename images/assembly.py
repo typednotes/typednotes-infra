@@ -3,6 +3,7 @@ import argparse
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 from images.releases import SERVICES, validate
 
@@ -10,7 +11,7 @@ ARTIFACT_REPOSITORY = "ghcr.io/typednotes/typednotes-lite"
 DIGEST_REFERENCE = re.compile(re.escape(ARTIFACT_REPOSITORY) + r"@sha256:[0-9a-f]{64}\Z")
 
 
-def matches_run(actual, expected):
+def matches_run(actual: object, expected: object) -> bool:
     """Reuse successful jobs on a retry, never another workflow run's output."""
     if not isinstance(expected, str) or not re.fullmatch(r"[0-9]+-[0-9]+", expected):
         raise ValueError("Expected the workflow run ID and attempt for service artifacts")
@@ -21,12 +22,13 @@ def matches_run(actual, expected):
     return run == expected_run and int(attempt) <= int(expected_attempt)
 
 
-def contexts(manifest, receipts, platform, build_run):
+def contexts(manifest: dict[str, Any], receipts: list[dict[str, Any]], platform: str | None,
+             build_run: str) -> dict[str, str]:
     validate(manifest)
     matches_run(build_run, build_run)
     if platform not in ("linux/amd64", "linux/arm64"):
         raise ValueError("Unsupported artifact platform")
-    inputs = {}
+    inputs: dict[str, str] = {}
     for receipt in receipts:
         service = receipt.get("service")
         if service not in SERVICES or service in inputs:
@@ -43,10 +45,10 @@ def contexts(manifest, receipts, platform, build_run):
     return inputs
 
 
-def variants(manifest, receipts, build_run):
+def variants(manifest: dict[str, Any], receipts: list[dict[str, Any]], build_run: str) -> dict[str, list[str]]:
     validate(manifest)
     matches_run(build_run, build_run)
-    platforms = {}
+    platforms: dict[str, dict[str, str]] = {}
     for receipt in receipts:
         platform = receipt.get("platform")
         if platform not in ("linux/amd64", "linux/arm64") or platform in platforms:
@@ -66,11 +68,11 @@ def variants(manifest, receipts, build_run):
             for variant in ("lite", "local")}
 
 
-def read_receipts(directory):
+def read_receipts(directory: str | Path) -> list[dict[str, Any]]:
     return [json.loads(path.read_text()) for path in sorted(Path(directory).glob("*.json"))]
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("manifest", type=Path)
     parser.add_argument("receipts", type=Path)
@@ -81,6 +83,7 @@ def main():
     args = parser.parse_args()
     manifest = json.loads(args.manifest.read_text())
     receipts = read_receipts(args.receipts)
+    output: dict[str, Any]
     if args.variants:
         output = variants(manifest, receipts, args.build_run)
     else:

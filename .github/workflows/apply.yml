@@ -89,7 +89,10 @@ jobs:
           persist-credentials: false
       - name: Install native FFI dependencies
         run: sudo apt-get update && sudo apt-get install -y libpq-dev libssl-dev libsecret-1-dev pkg-config ca-certificates
+      # `--wfail`: a warning, including `sorry`, fails the build.
       - uses: leanprover/lean-action@v1.6.0
+        with:
+          build-args: "--wfail"
       - name: Point OpenSSL at the runner's CA bundle
         run: |
           echo "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt" >> "$GITHUB_ENV"

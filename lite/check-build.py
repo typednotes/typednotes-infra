@@ -4,6 +4,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -12,7 +13,8 @@ from images.assembly import read_receipts
 from images.releases import MANIFEST_LABEL, SERVICES, canonical, validate
 
 
-def check(config, bake, receipts=None, build_run=None):
+def check(config: dict[str, Any], bake: dict[str, Any], receipts: list[dict[str, Any]] | None = None,
+          build_run: str | None = None) -> None:
     validate(config)
     targets = bake["target"]
     expected = {"app", "ledger", "liaison", "vault", "lode", "lun"}
@@ -22,8 +24,12 @@ def check(config, bake, receipts=None, build_run=None):
     platform = targets["lite"]["platforms"]
     if platform not in (["linux/amd64"], ["linux/arm64"]):
         raise ValueError("Expected one supported native build platform")
-    expected_contexts = ({name: f"target:{name}" for name in expected} if receipts is None else
-                         artifact_contexts(config, receipts, platform[0], build_run))
+    if receipts is None:
+        expected_contexts = {name: f"target:{name}" for name in expected}
+    elif build_run is None:
+        raise ValueError("--build-run is required with --receipts")
+    else:
+        expected_contexts = artifact_contexts(config, receipts, platform[0], build_run)
     if contexts != expected_contexts:
         raise ValueError("Lite's inputs must match all six resolved source builds or artifact digests")
     if receipts is not None and (set(targets) & (expected | {name + "-artifact" for name in expected})):

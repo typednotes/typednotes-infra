@@ -17,11 +17,11 @@ from images.tests.fixtures import fixture_bundle
 
 
 class ReleaseTests(unittest.TestCase):
-    def test_empty_sql_cannot_publish_an_image_that_infra_would_reject(self):
+    def test_empty_sql_cannot_publish_an_image_that_infra_would_reject(self) -> None:
         with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(ValueError, "Empty migration"):
             fixture_bundle(directory, empty_sql=True)
 
-    def test_tag_api_pagination_checks_every_page(self):
+    def test_tag_api_pagination_checks_every_page(self) -> None:
         pages = {1: [{"name": f"v0.{number}.0", "commit": {"sha": "a" * 40}} for number in range(100)],
                  2: [{"name": "v1.0.0", "commit": {"sha": "b" * 40}}]}
         self.assertEqual(latest_tag(tag_listing("typednotes/typednotes", fetch_page=pages.__getitem__)),
@@ -29,23 +29,23 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             tag_listing("typednotes/typednotes", fetch_page=lambda _: {"message": "not a tag list"})
 
-    def test_highest_numeric_stable_tag_and_annotated_peeling(self):
+    def test_highest_numeric_stable_tag_and_annotated_peeling(self) -> None:
         listing = "\n".join(f"{sha * 40}\trefs/tags/{tag}" for sha, tag in
                             (("a", "v0.9.9"), ("b", "v0.10.0"), ("c", "v0.10.0^{}"),
                              ("d", "v99.0.0-rc.1"), ("e", "latest")))
         self.assertEqual(latest_tag(listing), ("v0.10.0", "c" * 40))
 
-    def test_lightweight_tags_and_refusal_when_no_stable_version_exists(self):
+    def test_lightweight_tags_and_refusal_when_no_stable_version_exists(self) -> None:
         self.assertEqual(latest_tag(f"{'a' * 40}\trefs/tags/v1.0.0"), ("v1.0.0", "a" * 40))
         with self.assertRaises(ValueError):
             latest_tag(f"{'a' * 40}\trefs/tags/v1.0.0-beta")
 
-    def test_any_service_change_changes_polling_key(self):
+    def test_any_service_change_changes_polling_key(self) -> None:
         baseline = resolve_refs("packaging", lambda _: f"{'a' * 40}\trefs/tags/v1.0.0")
         updated = resolve_refs("packaging", lambda repo: f"{('b' if repo == 'typednotes/secrets' else 'a') * 40}\trefs/tags/v1.0.0")
         self.assertNotEqual(baseline["key"], updated["key"])
 
-    def test_all_sources_and_sql_are_frozen_to_commits(self):
+    def test_all_sources_and_sql_are_frozen_to_commits(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             manifest = fixture_bundle(directory)
             self.assertEqual(validate(manifest), manifest)
@@ -58,7 +58,7 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 validate(changed)
 
-    def test_image_index_freezes_amd64_and_verifies_registry_blobs(self):
+    def test_image_index_freezes_amd64_and_verifies_registry_blobs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             manifest = fixture_bundle(directory)
             config = canonical({"architecture": "amd64", "os": "linux", "config": {"Labels": {MANIFEST_LABEL: canonical(manifest)}}}).encode()
@@ -74,7 +74,7 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "immutable digest"):
                 read_manifest("ghcr.io/typednotes/typednotes-lite:latest", get=content.__getitem__)
 
-    def test_deployment_uses_image_sql_and_rejects_checksum_drift(self):
+    def test_deployment_uses_image_sql_and_rejects_checksum_drift(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             manifest = fixture_bundle(directory)
             files = {migration["url"]: (Path(directory) / migration["file"]).read_bytes()

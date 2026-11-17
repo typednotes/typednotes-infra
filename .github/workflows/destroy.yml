@@ -81,7 +81,10 @@ jobs:
       # fleet touches.
       - name: Install native FFI dependencies
         run: sudo apt-get update && sudo apt-get install -y libpq-dev libssl-dev libsecret-1-dev pkg-config ca-certificates
+      # `--wfail`: a warning, including `sorry`, fails the build.
       - uses: leanprover/lean-action@v1.6.0
+        with:
+          build-args: "--wfail"
       # Lean's toolchain bundles a *static* OpenSSL whose compile-time
       # `OPENSSLDIR` points at whatever machine built it, so on a fresh runner
       # there is no trust store and every certificate fails to verify with

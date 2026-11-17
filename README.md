@@ -207,7 +207,7 @@ and a local Postgres before this was committed.
 ## Building and running
 
 ```
-lake build                       # compile only; no network, no credentials
+lake build --wfail               # compile only; no network, no credentials; warnings fail it
 lake exe typednotes-infra check  # offline checks (also: bare `lake exe typednotes-infra`)
 lake exe typednotes-infra plan   # what would change — needs credentials, changes nothing
 lake exe typednotes-infra apply  # actually reconcile — the only mutating command
@@ -222,7 +222,10 @@ by Infra 0.23.0. `Main.lean` delegates directly to its CLI, with no networking
 script or additional apply hooks. The existing private network is a prerequisite
 described in [service access](docs/service-access.md).
 
-`lake build` only compiles. `plan` and `apply` are `infra`'s, called from here and from CI.
+`lake build` only compiles. The package turns `autoImplicit` and `relaxedAutoImplicit` off, and
+CI builds with `--wfail`, so a warning (including `sorry`) fails the build. The Python is
+checked by `mypy --strict` (run `mypy` from the repository root; `mypy.ini` names the files).
+`plan` and `apply` are `infra`'s, called from here and from CI.
 `lean-toolchain` pins Lean **4.34.1**; CI uses `actions/checkout` **7.0.1** and
 `leanprover/lean-action` **1.6.0**.
 
@@ -552,7 +555,7 @@ See [the Lite CI sequence](docs/lite.md#ci-deployment).
 Cloud reconciliation/teardown stay manual. The separate Combined images workflow
 automatically builds and publishes images on service-version or packaging changes.
 
-**`plan.yml`** runs `check` on pushes to `main` and pull requests targeting `main`, and additionally posts a live `plan`
+**`plan.yml`** type-checks the Python (`mypy --strict`) and runs `check` on pushes to `main` and pull requests targeting `main`, and additionally posts a live `plan`
 to the run summary on pushes to `main` and manual dispatches on `main`. It never applies.
 
 **`apply.yml`** is the manual apply. Its only trigger is `workflow_dispatch` — there is no push

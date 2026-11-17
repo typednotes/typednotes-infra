@@ -39,13 +39,25 @@ jobs:
       TYPEDNOTES_LITE_IMAGE: ${{ needs.configuration.outputs.image }}
     steps:
       - uses: actions/checkout@v7.0.1
+      # Strict static typing of the Python under images/, lite/, local/ and
+      # scripts/ (`mypy.ini`). Before the Lean build, so it fails fast. A venv
+      # because the runner's system Python is externally managed (PEP 668);
+      # mypy is pinned so a new release cannot turn CI red on its own.
+      - name: Type-check the Python (mypy --strict)
+        run: |
+          python3 -m venv "$RUNNER_TEMP/mypy"
+          "$RUNNER_TEMP/mypy/bin/pip" install --quiet mypy==2.4.1
+          "$RUNNER_TEMP/mypy/bin/mypy"
       # Same native FFI dependency set as `infra`'s own CI, for the same reason:
       # `Infra` pulls in all of Linen's `extern_lib`, not just the parts this
       # fleet touches. See `infra`'s `lean_action_ci.yml` for the fuller
       # explanation (`System.Keychain`/libsecret, libpq, OpenSSL headers).
       - name: Install native FFI dependencies
         run: sudo apt-get update && sudo apt-get install -y libpq-dev postgresql libssl-dev libsecret-1-dev pkg-config ca-certificates
+      # `--wfail`: a warning, including `sorry`, fails the build.
       - uses: leanprover/lean-action@v1.6.0
+        with:
+          build-args: "--wfail"
       # Lean's toolchain bundles a *static* OpenSSL whose compile-time
       # `OPENSSLDIR` points at whatever machine built it, so on a fresh runner
       # there is no trust store and every certificate fails to verify with

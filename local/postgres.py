@@ -8,7 +8,8 @@ from pathlib import Path
 
 
 class Postgres:
-    def __init__(self, directory, binaries="/usr/lib/postgresql/17/bin", identity=None, port=5432):
+    def __init__(self, directory: str | Path, binaries: str | Path = "/usr/lib/postgresql/17/bin",
+                 identity: pwd.struct_passwd | None = None, port: int = 5432) -> None:
         self.root = Path(directory)
         self.data = self.root / "postgres"
         self.socket = self.root / "run"
@@ -16,15 +17,15 @@ class Postgres:
         self.identity = identity or pwd.getpwnam("postgres")
         self.environment = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": self.identity.pw_dir, "LANG": "C"}
         self.port = port
-        self.child = None
+        self.child: subprocess.Popen[bytes] | None = None
 
-    def command(self, name, *args, **kwargs):
-        return subprocess.run([str(self.bin / name), *args], check=True, text=True,
+    def command(self, name: str, *args: str, input: str | None = None) -> str:
+        return subprocess.run([str(self.bin / name), *args], check=True, text=True, input=input,
                               capture_output=True, user=self.identity.pw_uid, group=self.identity.pw_gid,
                               extra_groups=[] if os.geteuid() == 0 else None, env=self.environment,
-                              cwd=str(self.root), **kwargs).stdout
+                              cwd=str(self.root)).stdout
 
-    def start(self):
+    def start(self) -> None:
         for directory in (self.data, self.socket):
             directory.mkdir(mode=0o700, parents=True, exist_ok=True)
             os.chmod(directory, 0o700)
@@ -37,12 +38,12 @@ class Postgres:
         version = self.command("postgres", "--version").split()[2].split(".")[0]
         if (self.data / "PG_VERSION").read_text().strip() != version:
             raise ValueError("PostgreSQL major version mismatch; migrate the directory before using this image")
-        self.child = subprocess.Popen([str(self.bin / "postgres"), "-D", str(self.data), "-k", str(self.socket),
+        child = self.child = subprocess.Popen([str(self.bin / "postgres"), "-D", str(self.data), "-k", str(self.socket),
                                        "-h", "127.0.0.1", "-p", str(self.port)], user=self.identity.pw_uid,
                                       group=self.identity.pw_gid, cwd=str(self.root), start_new_session=True,
                                       extra_groups=[] if os.geteuid() == 0 else None, env=self.environment)
         for _ in range(120):
-            if self.child.poll() is not None:
+            if child.poll() is not None:
                 raise RuntimeError("PostgreSQL exited during startup")
             try:
                 self.psql("SELECT 1")
@@ -51,12 +52,12 @@ class Postgres:
                 time.sleep(0.25)
         raise RuntimeError("PostgreSQL startup timeout")
 
-    def psql(self, sql, database="postgres"):
+    def psql(self, sql: str, database: str = "postgres") -> str:
         return self.command("psql", "--no-psqlrc", "--tuples-only", "--no-align", "--quiet",
                             "--set", "ON_ERROR_STOP=1", "--host", str(self.socket), "--port", str(self.port),
                             "--username", self.identity.pw_name, "--dbname", database, input=sql)
 
-    def stop(self):
+    def stop(self) -> None:
         if self.child is None:
             return
         if self.child.poll() is None:

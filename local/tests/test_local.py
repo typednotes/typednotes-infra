@@ -22,19 +22,19 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class CredentialTests(unittest.TestCase):
-    def test_postgres_does_not_inherit_provider_keys_or_external_database_options(self):
+    def test_postgres_does_not_inherit_provider_keys_or_external_database_options(self) -> None:
         with patch.dict(os.environ, {"GITHUB_CLIENT_SECRET": "fixture", "PGOPTIONS": "fixture"}):
             pg = Postgres("/unused", identity=pwd.getpwuid(os.getuid()))
         self.assertNotIn("GITHUB_CLIENT_SECRET", pg.environment)
         self.assertNotIn("PGOPTIONS", pg.environment)
 
-    def test_secrets_survive_restart_and_are_private(self):
+    def test_secrets_survive_restart_and_are_private(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             first = credentials(directory)
             self.assertEqual(first, credentials(directory))
             self.assertEqual((Path(directory) / "secrets.json").stat().st_mode & 0o777, 0o600)
 
-    def test_missing_keys_next_to_existing_data_never_silently_regenerate(self):
+    def test_missing_keys_next_to_existing_data_never_silently_regenerate(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             pg = Path(directory) / "postgres"
             pg.mkdir()
@@ -43,7 +43,7 @@ class CredentialTests(unittest.TestCase):
                 credentials(directory)
             self.assertFalse((Path(directory) / "secrets.json").exists())
 
-    def test_local_scopes_compute_credentials_to_app_and_persists_worker_homes(self):
+    def test_local_scopes_compute_credentials_to_app_and_persists_worker_homes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             source = credentials(directory) | {"DATABASE_URL": "postgres://runtime@db/app", "SECRETS_SERVER_STORAGE_DATABASE_URL": "postgres://runtime@db/app",
                                                  "COMPUTE_DB_URL": "postgres://admin@db/compute",
@@ -57,7 +57,7 @@ class CredentialTests(unittest.TestCase):
 
 
 class LauncherTests(unittest.TestCase):
-    def test_podman_preference_and_quoted_persistent_directory(self):
+    def test_podman_preference_and_quoted_persistent_directory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for engine in ("podman", "docker"):
@@ -81,7 +81,7 @@ class LauncherTests(unittest.TestCase):
 @unittest.skipUnless(os.environ.get("LOCAL_POSTGRES_BIN"), "Set LOCAL_POSTGRES_BIN to run the real PostgreSQL lifecycle test")
 class DatabaseTests(unittest.TestCase):
     @unittest.skipUnless(os.environ.get("LOCAL_RELEASE_BUNDLE"), "Set LOCAL_RELEASE_BUNDLE to check resolved real service SQL")
-    def test_real_packaged_service_migrations(self):
+    def test_real_packaged_service_migrations(self) -> None:
         bundle = Path(os.environ["LOCAL_RELEASE_BUNDLE"]).resolve()
         manifest = json.loads((bundle / "manifest.json").read_text())
         with tempfile.TemporaryDirectory() as directory, socket.socket() as listener:
@@ -91,7 +91,7 @@ class DatabaseTests(unittest.TestCase):
             pg = Postgres(directory, binaries=os.environ["LOCAL_POSTGRES_BIN"], identity=pwd.getpwuid(os.getuid()), port=port)
             try:
                 pg.start()
-                def sql(text):
+                def sql(text: str) -> str:
                     return pg.psql(text)
                 migrations.apply(sql, manifest, bundle)
                 migrations.apply(sql, manifest, bundle)
@@ -101,7 +101,7 @@ class DatabaseTests(unittest.TestCase):
             finally:
                 pg.stop()
 
-    def test_bootstrap_migrations_role_isolation_restart_and_history_refusal(self):
+    def test_bootstrap_migrations_role_isolation_restart_and_history_refusal(self) -> None:
         with tempfile.TemporaryDirectory() as directory, socket.socket() as listener:
             root = Path(directory)
             listener.bind(("127.0.0.1", 0))
@@ -114,17 +114,18 @@ class DatabaseTests(unittest.TestCase):
             try:
                 pg.start()
                 configure_database(pg, values)
-                sql = lambda text: pg.psql(text, database="typednotes")
+                def sql(text: str) -> str:
+                    return pg.psql(text, database="typednotes")
                 migrations.apply(sql, manifest, bundle)
                 migrations.apply(sql, manifest, bundle)
                 self.assertEqual(sql("SELECT count(*) FROM core.infra_migrations").strip(), "1")
                 initial = copy.deepcopy(manifest)
 
-                def seal():
+                def seal() -> None:
                     manifest.pop("build_id", None)
                     manifest["build_id"] = hashlib.sha256(canonical(manifest).encode()).hexdigest()
 
-                def append(identifier, body):
+                def append(identifier: str, body: str) -> None:
                     migration = {key: value.replace("0001_initial", identifier + "_append") if isinstance(value, str) else value
                                  for key, value in manifest["histories"][0]["migrations"][0].items()}
                     migration.update(id=identifier, sha256=hashlib.sha256(body.encode()).hexdigest())

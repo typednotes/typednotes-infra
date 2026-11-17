@@ -8,9 +8,11 @@ import signal
 import sys
 import tempfile
 from pathlib import Path
+from types import FrameType
+from typing import Any
 
 from images import migrations
-from lite.runtime import Supervisor, healthy, services
+from lite.runtime import Service, Supervisor, healthy, services
 from local.postgres import Postgres
 
 SECRET_KEYS = ("SECRETS_MASTER_KEY", "SECRETS_BOOTSTRAP_PASSWORD", "LIAISON_ROOT_KEY",
@@ -18,17 +20,17 @@ SECRET_KEYS = ("SECRETS_MASTER_KEY", "SECRETS_BOOTSTRAP_PASSWORD", "LIAISON_ROOT
                "LODE_TOKEN", "LUN_TOKEN", "LUN_ID_SALT", "POSTGRES_RUNTIME_PASSWORD", "COMPUTE_DB_PASSWORD")
 
 
-def credentials(directory):
+def credentials(directory: str | Path) -> dict[str, str]:
     path = Path(directory) / "secrets.json"
     if not path.exists():
         # A missing master key beside an existing cluster is not a fresh install.
         if (Path(directory) / "postgres" / "PG_VERSION").exists():
             raise ValueError("Missing secrets.json for an existing database; restore the original file")
-        values = {key: secrets.token_hex(32) for key in SECRET_KEYS}
+        generated = {key: secrets.token_hex(32) for key in SECRET_KEYS}
         fd, name = tempfile.mkstemp(prefix=".secrets-", dir=directory)
         temporary = Path(name)
         with os.fdopen(fd, "w") as stream:
-            json.dump(values, stream)
+            json.dump(generated, stream)
             stream.flush()
             os.fsync(stream.fileno())
         temporary.replace(path)
@@ -38,14 +40,14 @@ def credentials(directory):
         finally:
             os.close(descriptor)
     os.chmod(path, 0o600)
-    values = json.loads(path.read_text())
+    values: dict[str, str] = json.loads(path.read_text())
     if set(values) != set(SECRET_KEYS) or any(not isinstance(value, str) or len(value) != 64 or
                                              any(c not in "0123456789abcdef" for c in value) for value in values.values()):
         raise ValueError("Invalid persisted Local credentials; restore secrets.json")
     return values
 
 
-def configure_database(pg, values):
+def configure_database(pg: Postgres, values: dict[str, str]) -> None:
     for role, key, attributes in (("typednotes_runtime", "POSTGRES_RUNTIME_PASSWORD", "NOCREATEROLE"),
                                    ("typednotes_compute", "COMPUTE_DB_PASSWORD", "CREATEROLE NOINHERIT")):
         exists = pg.psql(f"SELECT count(*) FROM pg_roles WHERE rolname='{role}'").strip() == "1"
@@ -59,7 +61,7 @@ def configure_database(pg, values):
     pg.psql("REVOKE ALL ON SCHEMA public FROM PUBLIC;", database="compute")
 
 
-def environment(root, manifest, values):
+def environment(root: Path, manifest: dict[str, Any], values: dict[str, str]) -> list[Service]:
     source = os.environ | values
     source.update(DATABASE_URL=f"postgres://typednotes_runtime:{values['POSTGRES_RUNTIME_PASSWORD']}@127.0.0.1:5432/typednotes",
                   SECRETS_SERVER_STORAGE_DATABASE_URL=f"postgres://typednotes_runtime:{values['POSTGRES_RUNTIME_PASSWORD']}@127.0.0.1:5432/typednotes",
@@ -70,17 +72,17 @@ def environment(root, manifest, values):
 
 
 class LocalSupervisor(Supervisor):
-    def __init__(self, definitions, postgres):
+    def __init__(self, definitions: list[Service], postgres: Postgres) -> None:
         super().__init__(definitions)
         self.postgres = postgres
 
-    def check_children(self):
+    def check_children(self) -> None:
         super().check_children()
-        if self.postgres.child.poll() is not None:
+        if self.postgres.child is None or self.postgres.child.poll() is not None:
             raise RuntimeError("PostgreSQL exited")
 
 
-def main():
+def main() -> int:
     root = Path(os.environ.get("TYPEDNOTES_DATA_DIR", "/data"))
     manifest_root = Path("/usr/local/share/typednotes")
     manifest = json.loads((manifest_root / "manifest.json").read_text())
@@ -98,9 +100,9 @@ def main():
             raise ValueError("Another Local instance is already using this directory") from error
         values = credentials(root)
         pg = Postgres(root)
-        supervisor = None
+        supervisor: LocalSupervisor | None = None
 
-        def stop(*_):
+        def stop(_signal: int, _frame: FrameType | None) -> None:
             if supervisor is not None:
                 supervisor.stop()
             else:
