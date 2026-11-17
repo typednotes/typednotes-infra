@@ -15,9 +15,11 @@ share durable resource identities. The original `full` fleet remains independent
 
 ## Lite deployment (default)
 
-**Release 0.10.1** fixes worker startup and promoted vault connectivity, shares
-storage/bundle construction, and persists the workflow topology with downgrade
-protection. See [the release notes](docs/release-0.10.1.md).
+**Release 0.10.2** makes the combined-image smoke test report the Local
+runtime's refusals (stderr included), and checks the repository strictly:
+Lean with `autoImplicit` off and `--wfail`, Python with `mypy --strict`. See
+[the release notes](docs/release-0.10.2.md); 0.10.1's fixes to worker startup,
+vault connectivity and promotion safety are in [its notes](docs/release-0.10.1.md).
 
 The local CLI defaults to **`lite`**. CI **Apply**, **Plan** and **Destroy** default
 to **`current`**, using repository variable `TYPEDNOTES_DEPLOYMENT` (Lite when unset).

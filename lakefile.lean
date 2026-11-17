@@ -150,7 +150,7 @@ run_cmd do
 -- ⟪native-link-flags:end⟫
 
 package «typednotes-infra» where
-  version := v!"0.10.1"
+  version := v!"0.10.2"
   moreLinkArgs := nativeLinkArgs
   -- Strict elaboration: every variable is bound explicitly. CI also builds
   -- with `--wfail`, so a warning (including `sorry`) fails the build.
