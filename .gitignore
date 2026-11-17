@@ -4,3 +4,8 @@ __pycache__/
 typednotes-data/
 local.env
 .env
+
+# agents-md standard: local, generated and cached content
+reviews/
+output/
+.cache/
