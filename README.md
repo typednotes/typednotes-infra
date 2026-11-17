@@ -17,7 +17,7 @@ share durable resource identities. The original `full` fleet remains independent
 
 **Release 0.10.2** makes the combined-image smoke test report the Local
 runtime's refusals (stderr included), and checks the repository strictly:
-Lean with `autoImplicit` off and `--wfail`, Python with `mypy --strict`. See
+Lean with `--wfail`, Python with `mypy --strict`. See
 [the release notes](docs/release-0.10.2.md); 0.10.1's fixes to worker startup,
 vault connectivity and promotion safety are in [its notes](docs/release-0.10.1.md).
 
@@ -224,8 +224,8 @@ by Infra 0.23.0. `Main.lean` delegates directly to its CLI, with no networking
 script or additional apply hooks. The existing private network is a prerequisite
 described in [service access](docs/service-access.md).
 
-`lake build` only compiles. The package turns `autoImplicit` and `relaxedAutoImplicit` off, and
-CI builds with `--wfail`, so a warning (including `sorry`) fails the build. The Python is
+`lake build` only compiles. CI builds with
+`--wfail`, so a warning (including `sorry`) fails the build. The Python is
 checked by `mypy --strict` (run `mypy` from the repository root; `mypy.ini` names the files).
 `plan` and `apply` are `infra`'s, called from here and from CI.
 `lean-toolchain` pins Lean **4.34.1**; CI uses `actions/checkout` **7.0.1** and

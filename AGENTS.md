@@ -1,6 +1,6 @@
 # AGENTS.md — typednotes-infra
 
-<!-- agents-md standard v3 — github.com/ngrislain/agents. Refresh with the agents-md skill. -->
+<!-- agents-md standard v4 — github.com/ngrislain/agents. Refresh with the agents-md skill. -->
 
 Instructions for coding agents (Claude Code, Codex, pi, opencode, …) and for humans working on
 this project. `CLAUDE.md` imports this file; edit this one.
@@ -48,7 +48,11 @@ Before declaring a change done, run type-check, tests and lint, and report their
 
 **Confirm explicitly every time**, even if a similar action was approved earlier — approval does
 not carry over to a new context:
-- `git push` of any kind; never force-push, and never push to `main`/`master` directly;
+- `git push` only when explicitly requested by the user for that operation. Direct pushes to
+  `main`/`master` are permitted only when explicitly specified. A request specifying the push
+  scope (repositories, remote, branches and any tags), including an explicit command or batch,
+  counts as confirmation; do not ask again for the same operation. Approval does not extend to
+  later pushes. Never force-push or rewrite pushed history;
 - opening, merging or closing a PR/MR, posting review comments, tagging, releasing, publishing a
   package or image;
 - deploying to any environment (dev, staging, prod);
@@ -159,9 +163,8 @@ experiments are logged too.
 
 - Use the standard type-checker of the language/framework in its strictest practical mode, run it in
   CI, and keep it at zero errors.
-  In this project: Lean 4 (`leanprover/lean4:v4.34.1`) with `autoImplicit` and
-  `relaxedAutoImplicit` off for the package (`lakefile.lean`'s `leanOptions`), and
-  `lake build --wfail` in CI (`plan.yml`, `apply.yml`, `destroy.yml`, `images.yml`): warnings,
+  In this project: Lean 4 (`leanprover/lean4:v4.34.1`) with `autoImplicit` on (Lean's default: it only automates implicit binders, which are still fully checked),
+  and `lake build --wfail` in CI (`plan.yml`, `apply.yml`, `destroy.yml`, `images.yml`): warnings,
   including `sorry`, fail the build. The Python under `images/`, `lite/`, `local/` and
   `scripts/` is checked by `mypy --strict` (`mypy.ini`; mypy 2.4.1 in `plan.yml`).
 - Make illegal states unrepresentable: precise types, enums/sum types over strings and flags, new
