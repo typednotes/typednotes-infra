@@ -10,7 +10,7 @@ required=(SCW_ACCESS_KEY SCW_SECRET_KEY SCW_DEFAULT_PROJECT_ID SCW_DEFAULT_ORGAN
   SLACK_SIGNING_SECRET WHATSAPP_APP_SECRET WHATSAPP_VERIFY_TOKEN)
 case "${TYPEDNOTES_DEPLOYMENT:-lite}" in
   lite|lite-storage) ;;
-  full|full-from-lite) required+=(COMPUTE_DB_PASSWORD DB_INSPECTOR_USERNAME DB_INSPECTOR_PASSWORD) ;;
+  full|full-from-lite) required+=(COMPUTE_DB_PASSWORD DB_INSPECTOR_USERNAME DB_INSPECTOR_PASSWORD OPERATOR_CIDRS) ;;
   *) echo 'TYPEDNOTES_DEPLOYMENT must be lite, full-from-lite, full or lite-storage' >&2; exit 1 ;;
 esac
 missing=()

@@ -54,6 +54,27 @@ def main (args : List String) : IO UInt32 := do
     catch error =>
       IO.eprintln s!"error: {error}"
       return 1
+  -- The operator gateway's allowlist is operator-private data: this
+  -- repository is public, so the real workstation addresses never live in it
+  -- (see `Fleet/Access.lean`). They arrive through `OPERATOR_CIDRS` and are
+  -- spliced into the fleet below. The declared placeholder is non-routable, so
+  -- a full plan/apply without this variable would close the DB admin gateway
+  -- rather than open it — refuse that loudly instead.
+  let operatorCidrs ←
+    match (← IO.getEnv "OPERATOR_CIDRS") with
+    | none => pure none
+    | some raw =>
+      let cidrs := (raw.splitOn ",").map (fun raw => raw.trimAscii.toString) |>.filter (fun cidr => !cidr.isEmpty)
+      if !cidrs.isEmpty && cidrs.all Infra.Specs.boundedCidr then
+        pure (some cidrs)
+      else
+        IO.eprintln "OPERATOR_CIDRS must be a comma-separated list of bounded IPv4/IPv6 CIDRs (no empty or world-open entries)"
+        return 2
+  if ["full", "full-from-lite"].contains mode &&
+      ["plan", "apply"].contains (args.headD "") && !args.contains "--destroy" &&
+      operatorCidrs.isNone then
+    IO.eprintln "Set OPERATOR_CIDRS to the operator workstation CIDRs: the DB admin gateway belongs to the full topology and its allowlist is not in this repository"
+    return 2
   match mode with
   | "lite" | "full-from-lite" =>
     let image := (← IO.getEnv "TYPEDNOTES_LITE_IMAGE").getD liteImage
@@ -77,6 +98,8 @@ def main (args : List String) : IO UInt32 := do
         match (if mode == "lite" then typednotesLiteDeployed deployment else Promotion.deployed deployment) with
         | .error error => IO.eprintln error; return 1
         | .ok resolved => selectedFleet := resolved
+    if let some cidrs := operatorCidrs then
+      selectedFleet := withOperatorCidrs cidrs selectedFleet
     Infra.Cli.run "typednotes-infra" selectedFleet
       (headline := if mode == "lite" then
         "Typednotes Lite — one container and two Serverless SQL databases; compute DB sinks disabled"
@@ -87,7 +110,10 @@ def main (args : List String) : IO UInt32 := do
       (headline := "Typednotes Lite storage preparation — no migrations or runtime rollout")
       (accounts := accounts) (boundary := typednotesLiteBoundary) (args := args)
   | "full" =>
-    Infra.Cli.run "typednotes-infra" typednotes
+    let fullFleet := match operatorCidrs with
+      | some cidrs => withOperatorCidrs cidrs typednotes
+      | none => typednotes
+    Infra.Cli.run "typednotes-infra" fullFleet
       (accounts := accounts) (boundary := typednotesBoundary) (args := args)
   | _ =>
     IO.eprintln "TYPEDNOTES_DEPLOYMENT must be lite (default), full-from-lite, full or lite-storage"

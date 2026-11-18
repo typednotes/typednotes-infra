@@ -37,21 +37,33 @@ it does not substitute the vault executable's internal listener port.
 
 ## Operator addresses
 
-`operatorCidrs` records the IPv4/IPv6 workstation addresses observed during setup:
+The DB admin gateway's allowlist is operator-private data: the workstation
+IPv4/IPv6 addresses are deliberately **not committed to this repository**,
+which is public. The declaration (`Fleet/Access.lean`) carries only
+`192.0.2.0/24` — RFC 5737 documentation space: bounded and valid, so it
+passes every offline check, yet no real traffic can originate from it.
 
-- `REDACTED-OPERATOR-CIDR`
-- `REDACTED-OPERATOR-CIDR`
-- `REDACTED-OPERATOR-CIDR`
-- `REDACTED-OPERATOR-CIDR`
+Real addresses are supplied at plan/apply time through `OPERATOR_CIDRS`,
+a comma-separated list of bounded CIDRs:
 
-Edit that list and use the normal plan/apply flow. Empty, malformed and
-world-open proxy policies fail validation. The caller is never automatically
-added; network changes and IPv6 privacy-address rotations need an explicit edit.
+```sh
+export OPERATOR_CIDRS="203.0.113.7/32,2001:db8:1234::/64"
+```
+
+`Main.lean` validates the list and splices it into the gateway
+(`withOperatorCidrs` in `Fleet.lean`). A full or `full-from-lite`
+plan/apply without the variable is refused rather than closing the gateway
+on the declared placeholder. In CI, `OPERATOR_CIDRS` is a repository secret
+(`scripts/check-deployment-secrets.sh` lists it for the full topologies).
+Network changes and IPv6 privacy-address rotations need an explicit update
+of the secret or the exported variable; the caller is never added
+automatically.
 
 ## Plan and apply
 
 ```sh
 export TYPEDNOTES_DEPLOYMENT=full # independent original deployment
+export OPERATOR_CIDRS="…"         # operator workstation CIDRs, comma-separated
 lake build
 lake exe typednotes-infra check
 lake exe typednotes-infra plan

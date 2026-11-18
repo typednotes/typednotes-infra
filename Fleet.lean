@@ -701,6 +701,25 @@ def typednotesBoundary : Boundary :=
     namePrefix := some "secrets-"
     namePrefixes := ["typednotes-"] }
 
+/-- Splice the operator's real workstation CIDRs into the DB admin gateway's
+    proxy policy. The declaration itself carries only non-routable
+    documentation space (`Typednotes.Access.operatorCidrs`); `Main.lean` reads
+    the real addresses from `OPERATOR_CIDRS` and applies this to the fleet it
+    hands to Infra. Lite and `lite-storage` declare no gateway, so for them
+    this is a no-op. -/
+def withOperatorCidrs (cidrs : List String) (deployment : Fleet) : Fleet :=
+  { deployment with plan.assign
+      | .scaleway, .scalewayContainer, key =>
+        match deployment.plan.assign .scaleway .scalewayContainer key with
+        | .present spec =>
+          if deployment.keys.name .scaleway .scalewayContainer key == Typednotes.Access.gatewayContainer then
+            match deployment.keys.keyOfName? .scaleway .scalewayContainer "db-inspector" with
+            | some backend => .present { spec with proxy := .known (proxyTo backend cidrs "/db-inspector/") }
+            | none => .present spec
+          else .present spec
+        | state => state
+      | p, kind, key => deployment.plan.assign p kind key }
+
 -- ── Offline guarantees ────────────────────────────────────────────────────
 
 -- No plaintext secret is written into this file.

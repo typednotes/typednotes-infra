@@ -9,11 +9,15 @@ def publicContainer := "typednotes-app"
 def gatewayContainer := "operator-gateway"
 def supportingContainers := ["secrets-server", "ledger", "liaison", "lode", "lun", "db-inspector"]
 
-/-- Workstation addresses observed on 2026-10-11. These grant external access
-    only to the DB admin proxy; application authentication remains required. -/
+/-- Operator-private workstation addresses for the DB admin proxy. The
+    committed value is RFC 5737 documentation space: bounded and valid, so it
+    passes every offline check, yet no real traffic can originate from it.
+    The operator's real addresses are deliberately **not** in this (public)
+    repository. They are supplied at plan/apply time through the
+    `OPERATOR_CIDRS` environment variable, which `Main.lean` validates and
+    splices into the gateway with `withOperatorCidrs` in `Fleet.lean`. -/
 def operatorCidrs : List String :=
-  ["REDACTED-OPERATOR-CIDR", "REDACTED-OPERATOR-CIDR",
-   "REDACTED-OPERATOR-CIDR", "REDACTED-OPERATOR-CIDR"]
+  ["192.0.2.0/24"]
 
 /-- Native private URLs use the platform's HTTP front door, not the vault
     executable's listening port. Preserve explicit ports and TLS as well. -/
