@@ -27,7 +27,7 @@ podman machine start
 If a machine already exists, start that machine instead of initializing another.
 The 8 GiB setting is a practical starting allocation for notebook compilation,
 not a measured minimum. Container execution with Podman does not need Docker
-Desktop. Image builds in CI use Docker Buildx/Bake.
+Desktop.
 
 Useful launcher options:
 
@@ -103,29 +103,13 @@ can have subordinate host UIDs; use engine-aware backup tooling as appropriate.
 
 ## Builds and updates
 
-Both Local and Lite resolve the **newest stable `vMAJOR.MINOR.PATCH` tag of each
-service** for every new build, then freeze its peeled Git commit and migrations
-in one build manifest. No manually maintained service-version list is needed.
-
-The [Combined images workflow](../.github/workflows/images.yml) checks for new
-service tags every fifteen minutes and rebuilds **both images** when a service
-commit/version or the packaging revision changes. It also supports manual runs,
-packaging pushes and `repository_dispatch` notifications. Native amd64/arm64
-builds and both smoke tests must succeed before the multi-platform `latest` tags
-are promoted. See [the shared image build guide](../images/README.md).
-
-To build locally with a Docker Buildx builder, from the repository root:
-
-```sh
-scripts/build-images.sh
-# Resolve newest releases and inspect the build graph without running a builder:
-scripts/build-images.sh --print
-```
-
-The default build platform is the machine's native amd64/arm64 architecture.
-Use `PLATFORM=linux/amd64` or `PLATFORM=linux/arm64` to select it explicitly.
-For Podman-only use, pull the published image with the launcher; Bake itself is
-a Docker Buildx tool, not a Podman runtime dependency.
+Both Local and Lite bundle the **newest stable `vMAJOR.MINOR.PATCH` tag of each
+service** per build, freezing its peeled Git commit and migrations in one build
+manifest. The combined images are built and published by the
+[typednotes-lite repository](https://github.com/typednotes/typednotes-lite).
+Native amd64/arm64 builds and both smoke tests must succeed before the
+multi-platform `latest` tags are promoted. See
+[the shared metadata guide](../images/README.md).
 
 After publication of a new image, stop the current instance and launch against
 the same directory. Pulling `latest` does not modify a running container.

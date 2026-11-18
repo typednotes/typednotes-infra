@@ -35,25 +35,18 @@ jobs:
       deployment: ${{ inputs.deployment }}
       lite_image: ${{ inputs.lite_image || '' }}
       operation: apply
-  images:
-    needs: configuration
-    if: inputs.confirm == 'typednotes' && needs.configuration.outputs.deployment == 'lite'
-    uses: ./.github/workflows/images.yml
-    permissions:
-      contents: read
-      packages: write
   apply:
-    needs: [configuration, images]
+    needs: configuration
     runs-on: ubuntu-latest
     timeout-minutes: 180
-    if: ${{ !cancelled() && needs.configuration.result == 'success' && inputs.confirm == 'typednotes' && (needs.configuration.outputs.deployment != 'lite' || needs.images.result == 'success') }}
+    if: inputs.confirm == 'typednotes' && needs.configuration.result == 'success'
     environment: production
     permissions:
       contents: read
-      packages: write
     env:
       TYPEDNOTES_DEPLOYMENT: ${{ needs.configuration.outputs.deployment }}
-      TYPEDNOTES_LITE_IMAGE: ${{ needs.configuration.outputs.deployment == 'lite' && needs.images.outputs.lite || needs.configuration.outputs.image }}
+      TYPEDNOTES_LITE_IMAGE: ${{ needs.configuration.outputs.image }}
+      OPERATOR_CIDRS: ${{ secrets.OPERATOR_CIDRS }}
       SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
       SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
       SCW_DEFAULT_PROJECT_ID: ${{ secrets.SCW_DEFAULT_PROJECT_ID }}

@@ -44,60 +44,38 @@ generation and vault storage use the existing service paths. Selecting full
 topology adds the separately provisioned compute database; a second Serverless
 SQL database alone cannot support actor-role provisioning.
 
-## Building the image
+## The combined image
 
-`scripts/build-images.sh` resolves each service's newest stable
-`vMAJOR.MINOR.PATCH` tag, peels it to an immutable commit and discovers that
-commit's numbered SQL files. `lite/docker-bake.hcl` builds each service through
-its repository's Dockerfile and assembles **both Lite and Local** from the same
-snapshot. The generated `.images/bake.json` supplies the frozen source refs.
-Intermediate service images do not need publishing.
+The Lite and Local images are built and published by the
+[typednotes-lite repository](https://github.com/typednotes/typednotes-lite),
+which freezes each service's newest stable `vMAJOR.MINOR.PATCH` tag to its
+immutable commit and records that snapshot — source commits and SQL checksums —
+in the image's build manifest. This repository no longer builds images; it
+consumes the published `ghcr.io/typednotes/typednotes-{lite,local}` packages.
 
-The final Debian Trixie base meets the app's glibc requirement and contains the
-native libraries the Lean executables need. Identical installed Lean toolchains
-are deduplicated; different worker release toolchains remain supported. Each
-worker has its own warm package cache and private writable elan home. Native
-amd64 and arm64 variants are built and tested in CI.
-
-To build locally, from the repository root with a running Docker daemon:
-
-```sh
-scripts/build-images.sh
-```
-
-The wrapper disables GitHub cache exporters outside CI and defaults to the
-host's native architecture. A new service tag needs no version-file edit here.
-Source commits and SQL checksums are recorded in the image's build manifest.
 Live Lite plan/apply resolves the image once, reads that manifest and supplies
 its verified SQL to Infra, keeping migrations aligned with the executable even
 as `latest` changes. Offline checks use the declared baseline without networking.
-See [the shared build guide](../images/README.md) for the metadata boundary.
+See [the shared metadata guide](../images/README.md) for the metadata boundary.
 
 ## CI deployment
 
 Run **Apply** with `deployment: current` (initially Lite) and the existing
 `typednotes` confirmation. The workflow:
 
-1. Calls the reusable Combined images publisher. New service versions or
-   packaging changes build and smoke-test both Lite and Local on native amd64
-   and arm64 runners; an already published snapshot can be reused.
-2. Checks both fleets, process/configuration tests and required deployment secrets.
-3. Passes the returned immutable Lite image reference to plan, apply and
+1. Checks both fleets, process/configuration tests and required deployment secrets.
+2. Passes the selected immutable Lite image reference to plan, apply and
    convergence with `TYPEDNOTES_LITE_IMAGE`. Each call obtains the same image's
    matching migration SQL; Infra retains the migration/rollout gates.
 
-The publisher also runs on a fifteen-minute tag-check schedule, packaging pushes,
-manual dispatch and `service-version-updated` repository dispatch. A service
-repository does not need a cross-repository token for scheduled detection.
-Automatic image publication never applies cloud infrastructure.
+The image is not rebuilt in this repository: Apply deploys the digest of the
+already published combined image. Publication never applies cloud infrastructure.
 
-`GITHUB_TOKEN` needs `packages:write`, which the job declares. Like the other
-service packages, **the GHCR package must be public** so Infra and Scaleway can
-pull it. GitHub does not let `GITHUB_TOKEN` make a new package public: after the
-first upload, set both combined packages' visibility to public and rerun Apply.
-The image-metadata read in the live plan checks anonymous access before cloud
-creation. Packaging pushes can publish images; deployment remains manual.
-Before the first publication, a live Lite plan cannot resolve its `latest` image.
+Like the other
+service packages, **the GHCR package must be public** so Infra, Scaleway and the
+live plan's anonymous image-metadata read can access it. If the package is
+private, set its visibility to public; before the first publication, a live Lite
+plan cannot resolve its `latest` image.
 
 Lite requires the existing four Scaleway credentials and fleet values except
 `COMPUTE_DB_PASSWORD`, `DB_INSPECTOR_USERNAME`, `DB_INSPECTOR_PASSWORD`. The complete
@@ -115,7 +93,7 @@ lake script run apply --yes --refresh-secrets
 Set `TYPEDNOTES_LITE_IMAGE=ghcr.io/typednotes/typednotes-lite@sha256:…` for an
 explicit immutable image; otherwise live runs freeze `latest` and its matching
 schema manifest before handing the plan to Infra. Python 3 is required by this
-metadata helper as well as by the build tools.
+metadata helper.
 
 ## Startup, shutdown and recovery
 
@@ -199,7 +177,8 @@ have been created. Worker scratch state remains ephemeral.
 
 ### Updating a promoted deployment
 
-For subsequent releases, first publish and test a **new** combined bundle, then
+For subsequent releases, first publish and test a **new** combined bundle
+(built by the typednotes-lite repository), then
 update repository variable `TYPEDNOTES_LITE_IMAGE` to its immutable digest.
 Run Plan and Apply with `current`. Initial promotion reuses the deployed image;
 later updates intentionally select a new tested image and its matching SQL.
@@ -299,15 +278,10 @@ TYPEDNOTES_DEPLOYMENT=lite-storage lake exe typednotes-infra check
 lake env lean --run scripts/check-topology.lean
 python3 -m unittest discover -s lite/tests -v
 LOCAL_POSTGRES_BIN=/path/to/postgresql/bin python3 -m unittest discover -s lite/tests -v
-python3 -m images.releases --output .images
-lake env lean --run scripts/service-config.lean docker .images/manifest.json > .images/service-config.json
-python3 lite/check-image.py ghcr.io/typednotes/typednotes-lite:latest .images/manifest.json
 ```
 
-The image check uses the Lean-exported service environments, vault policies and
-secret-input bindings rather than a hand-maintained full-mode fixture. Supporting
-Docker services bind port 80 inside their test network namespace to model the
-platform HTTP front door. The image check needs Docker and a built image matching the resolved snapshot.
-It uses the packaged SQL with disposable Docker resources and makes no cloud or
-paid-provider calls. See [Local](../local/README.md) for the single-image,
+The process/configuration tests use the Lean-exported service environments,
+vault policies and secret-input bindings (`scripts/service-config.lean`) rather
+than a hand-maintained full-mode fixture. They make no cloud or paid-provider
+calls and need no Docker. See [Local](../local/README.md) for the single-image,
 directory-backed runtime, including Podman usage.

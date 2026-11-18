@@ -23,8 +23,10 @@ The local CLI defaults to **`lite`**. CI **Apply**, **Plan** and **Destroy** def
 to **`current`**, using repository variable `TYPEDNOTES_DEPLOYMENT` (Lite when unset).
 Push-triggered plans use that same persisted topology and, for promoted full,
 the `TYPEDNOTES_LITE_IMAGE` repository pin.
-Lite builds the app, Ledger, Liaison, Secrets, Lode and Lun from their newest
-stable release tags (frozen to commits per build), then deploys **one warm Serverless Container and two
+Lite deploys the published combined image (built and published from the
+services' stable release tags by the
+[typednotes-lite repository](https://github.com/typednotes/typednotes-lite))
+as **one warm Serverless Container and two
 Serverless SQL databases**. App, ledger and audit histories share the application
 database; the vault and its migration history use a separate database.
 The container has 4 vCPU / 8 GiB and exactly one instance; Lean toolchain
@@ -67,10 +69,9 @@ and publishes only `http://localhost:8080`. Local supports built-in compute DB
 sinks using a separate logical database on the same bundled PostgreSQL server.
 Human sign-in still needs an OAuth client configured for localhost.
 
-Both image variants use the same newest service releases. The
-[Combined images workflow](.github/workflows/images.yml) checks all six repositories
-every fifteen minutes and rebuilds both multi-platform images when a version
-changes. [Build, schema-alignment and trigger details](images/README.md).
+Both image variants are built and published by the
+[typednotes-lite repository](https://github.com/typednotes/typednotes-lite);
+this repository deploys them. [Schema-alignment details](images/README.md).
 
 ## What's declared
 
@@ -109,8 +110,9 @@ The preceding **0.7.0** declaration adopted app schema **0.11.0** through `0015`
 for direct project notes, stateless execution, durable schedules and delivery
 outboxes, targeting **Lun 0.4.1**, **Lode 0.5.0** and **Linen 1.12.0**.
 Full mode retains these schema histories; the **0.8.0** Lite bundle used
-**Lun 0.4.2**. Since **0.9.0**, Lite and Local resolve the newest stable service
-tags when building and carry their matching migrations. Upgrading from the
+**Lun 0.4.2**. Since **0.9.0**, Lite and Local bundle the newest stable service
+tags with their matching migrations; those combined images are built in the
+typednotes-lite repository. Upgrading from the
 older session-based runtime still requires draining old work and
 pausing old dispatch before the coordinated migration/rollout.
 See [the 0.7.0 rollout](docs/release-0.7.0.md).
@@ -545,12 +547,14 @@ repository variables `TYPEDNOTES_DEPLOYMENT=full-from-lite` and
 replace that image pin with a newly tested bundle. The CLI independently refuses
 unsupported Lite downgrades/teardown when cloud resources show a full topology,
 including partial promotion and retained compute storage.
-Lite Apply reuses the Combined images publisher and deploys its immutable digest
+Lite Apply deploys the published combined image's immutable digest
 with matching SQL. Full Apply uses the existing service images.
 See [the Lite CI sequence](docs/lite.md#ci-deployment).
 
-Cloud reconciliation/teardown stay manual. The separate Combined images workflow
-automatically builds and publishes images on service-version or packaging changes.
+Cloud reconciliation/teardown stay manual. The combined Lite/Local images are
+built and published by the
+[typednotes-lite repository](https://github.com/typednotes/typednotes-lite);
+this repository no longer builds them.
 
 **`plan.yml`** runs `check` on pushes to `main` and pull requests targeting `main`, and additionally posts a live `plan`
 to the run summary on pushes to `main` and manual dispatches on `main`. It never applies.
