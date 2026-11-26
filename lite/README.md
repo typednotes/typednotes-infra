@@ -29,3 +29,10 @@ build-manifest boundary.
 
 The deployed image never builds anything at runtime. For the image build recipe
 itself, see the typednotes-lite repository.
+
+## Offline deployment validation tests
+
+Run `python3 -m unittest discover -s lite/tests -p test_runtime.py -k DeploymentSecretTests -v`
+from the repository root. These tests supply an example operator CIDR
+so password checks reach the intended validation, and verify that full deployments
+still reject a missing `OPERATOR_CIDRS`. No cloud resources are contacted.
