@@ -13,6 +13,8 @@ would change, but changes nothing. `apply` reconciles the selected fleet;
 retiring resources removed from the declaration. Lite and `full-from-lite`
 share durable resource identities. The original `full` fleet remains independent.
 
+The fleet CLI builds with Lean 4.36.0 and Linen 4.0.0.
+
 ## Lite deployment (default)
 
 **Release 0.10.1** fixes worker startup and promoted vault connectivity, shares
@@ -225,7 +227,7 @@ script or additional apply hooks. The existing private network is a prerequisite
 described in [service access](docs/service-access.md).
 
 `lake build` only compiles. `plan` and `apply` are `infra`'s, called from here and from CI.
-`lean-toolchain` pins Lean **4.34.1**; CI uses `actions/checkout` **7.0.1** and
+`lean-toolchain` pins Lean **4.36.0**; CI uses `actions/checkout` **7.0.1** and
 `leanprover/lean-action` **1.6.0**.
 
 [`Main.lean`](https://github.com/typednotes/typednotes-infra/blob/main/Main.lean) hands [`Fleet.lean`](https://github.com/typednotes/typednotes-infra/blob/main/Fleet.lean)'s `typednotes` — the whole declaration, keys,
@@ -235,7 +237,7 @@ it the front end took the plan, the placement and the releases as three separate
 nothing stopped a call from handing over one and forgetting another.
 
 [`lakefile.lean`](https://github.com/typednotes/typednotes-infra/blob/main/lakefile.lean) therefore requires `infra` at a tag rather than at `main` — currently
-`v0.23.0`, with an explicit root dependency on linen `v1.12.0`, overriding Infra's
+`v0.23.0`, with an explicit root dependency on the Linen 4.0.0 release commit, overriding Infra's
 older `v1.9.2` transitive pin (0.19.0 lists managed Kubernetes clusters on every run, so
 the Scaleway key needs Kapsule read access — `AllProductsFullAccess` covers it; 0.14.0 read migrations from URLs and ordered them by their
 SQL, with container `migrations` lists and `namePrefixes`; 0.13.0 added the
@@ -613,7 +615,4 @@ static OpenSSL whose compile-time trust-store path does not exist on a runner. S
 
 ## Notes
 
-[`lakefile.lean`](https://github.com/typednotes/typednotes-infra/blob/main/lakefile.lean) duplicates ~80 lines of platform-conditional link flags from `infra`'s own
-[lakefile](https://github.com/typednotes/infra/blob/v0.23.0/lakefile.lean). That is not an oversight: Lake does not propagate a dependency's `moreLinkArgs` to a
-dependent's executable, and a lakefile cannot import a dependency's modules, so the computation
-has to be repeated. Keep the two copies in step.
+Lake resolves native linking from the imported Linen 4.0 modules.
