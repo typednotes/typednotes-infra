@@ -196,7 +196,8 @@ class SupervisionTests(unittest.TestCase):
 
 class DeploymentSecretTests(unittest.TestCase):
     def run_check(self, mode, **extra):
-        env = {"PATH": os.environ["PATH"], "TYPEDNOTES_DEPLOYMENT": mode}
+        env = {"PATH": os.environ["PATH"], "TYPEDNOTES_DEPLOYMENT": mode,
+               "OPERATOR_CIDRS": "198.51.100.1/32"}
         for key in ("SCW_ACCESS_KEY", "SCW_SECRET_KEY", "SCW_DEFAULT_PROJECT_ID", "SCW_DEFAULT_ORGANIZATION_ID",
                     "SECRETS_MASTER_KEY", "SECRETS_BOOTSTRAP_PASSWORD", "LIAISON_ROOT_KEY",
                     "APP_SECRETS_PASSWORD", "LIAISON_SECRETS_PASSWORD", "LUN_SECRETS_PASSWORD",
@@ -222,6 +223,15 @@ class DeploymentSecretTests(unittest.TestCase):
             result = self.run_check(mode, COMPUTE_DB_PASSWORD="Valid-Password1", DB_INSPECTOR_USERNAME="operator",
                                     DB_INSPECTOR_PASSWORD="fixture")
             self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_full_requires_an_explicit_operator_allowlist(self):
+        for mode in ("full", "full-from-lite"):
+            with self.subTest(mode=mode):
+                result = self.run_check(mode, COMPUTE_DB_PASSWORD="Valid-Password1",
+                                        DB_INSPECTOR_USERNAME="operator", DB_INSPECTOR_PASSWORD="fixture",
+                                        OPERATOR_CIDRS="")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("OPERATOR_CIDRS", result.stderr)
 
     def test_full_rejects_invalid_compute_password_and_lite_rejects_short_tokens(self):
         result = self.run_check("full", COMPUTE_DB_PASSWORD="invalid", DB_INSPECTOR_USERNAME="operator",
