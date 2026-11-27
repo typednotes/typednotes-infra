@@ -2,7 +2,7 @@ import Lake
 open System Lake DSL
 
 package «typednotes-infra» where
-  version := v!"0.10.4"
+  version := v!"0.10.5"
 
 -- A tag rather than `main`. `Main.lean` hands the whole declaration to
 -- `Infra.Cli.run` in one value, which does not compile against an `infra`
@@ -14,7 +14,7 @@ require infra from git "https://github.com/typednotes/infra" @ "v0.23.0"
 
 -- The root selects the Linen release for the whole fleet build.
 -- The root requirement deliberately overrides that older transitive version.
-require linen from git "https://github.com/typednotes/linen" @ "037925bc5068c54efd86690b78b258b9c6787959"
+require linen from git "https://github.com/typednotes/linen" @ "v4.1.0"
 
 
 @[default_target]
