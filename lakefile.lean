@@ -14,7 +14,7 @@ require infra from git "https://github.com/typednotes/infra" @ "v0.23.0"
 
 -- The root selects the Linen release for the whole fleet build.
 -- The root requirement deliberately overrides that older transitive version.
-require linen from git "https://github.com/typednotes/linen" @ "v4.1.0"
+require linen from git "https://github.com/typednotes/linen" @ "bcfec9a81d6e738ecb273f89e2102b4712d8e160"
 
 
 @[default_target]
