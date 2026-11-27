@@ -2,7 +2,7 @@ import Lake
 open System Lake DSL
 
 package «typednotes-infra» where
-  version := v!"0.10.5"
+  version := v!"0.10.6"
 
 -- A tag rather than `main`. `Main.lean` hands the whole declaration to
 -- `Infra.Cli.run` in one value, which does not compile against an `infra`

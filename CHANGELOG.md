@@ -2,10 +2,11 @@
 
 ## [Unreleased]
 
+## [0.10.6] — 2026-11-27
 
 ### Changed
 
-- Build with [Linen 5.0.0](https://github.com/typednotes/linen/commit/bcfec9a81d6e738ecb273f89e2102b4712d8e160).
+- Build with [Linen 5.0.0](https://github.com/typednotes/linen/releases/tag/v5.0.0).
 
 ## [0.10.5] — 2026-11-27
 
