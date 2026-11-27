@@ -13,7 +13,7 @@ would change, but changes nothing. `apply` reconciles the selected fleet;
 retiring resources removed from the declaration. Lite and `full-from-lite`
 share durable resource identities. The original `full` fleet remains independent.
 
-The fleet CLI builds with Lean 4.36.0 and Linen 4.1.0.
+The fleet CLI builds with Lean 4.36.0 and Linen 5.0.0.
 
 ## Lite deployment (default)
 
@@ -237,7 +237,7 @@ it the front end took the plan, the placement and the releases as three separate
 nothing stopped a call from handing over one and forgetting another.
 
 [`lakefile.lean`](https://github.com/typednotes/typednotes-infra/blob/main/lakefile.lean) therefore requires `infra` at a tag rather than at `main` — currently
-`v0.23.0`, with an explicit root dependency on the Linen 4.1.0 release commit, overriding Infra's
+`v0.23.0`, with an explicit root dependency on the Linen 5.0.0 release commit, overriding Infra's
 older `v1.9.2` transitive pin (0.19.0 lists managed Kubernetes clusters on every run, so
 the Scaleway key needs Kapsule read access — `AllProductsFullAccess` covers it; 0.14.0 read migrations from URLs and ordered them by their
 SQL, with container `migrations` lists and `namePrefixes`; 0.13.0 added the
@@ -615,4 +615,4 @@ static OpenSSL whose compile-time trust-store path does not exist on a runner. S
 
 ## Notes
 
-Lake resolves native linking from the imported Linen 4.1 modules.
+Lake resolves native linking from the imported Linen 5 modules.
